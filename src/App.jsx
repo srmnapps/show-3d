@@ -5,9 +5,10 @@ import {
   WsStatus, HandHud, Scoreboard, GameLog,
   StatusPill, ShowWindowOverlay, RoundEndControls, EndScreen
 } from './components/UI.jsx'
+import { SpecialModalManager } from './components/SpecialModals.jsx'
 import { LandingScreen, JoinScreen, LobbyScreen } from './components/Screens.jsx'
 
-const GAME_PHASES = ['playing','showWindow','afterShow','roundEnd']
+const GAME_PHASES = ['playing','showWindow','afterShow','roundEnd','giverSnatching','randomSnatching','giverSnatchPicking']
 
 export default function App() {
   const [screen,      setScreen]      = useState('landing')
@@ -19,8 +20,12 @@ export default function App() {
     errorMsg, loading, wsStatus,
     isHost, myPlayer, isMyTurn, turnPlayer, showAll,
     myRevealed, countdown, canJoinShow, hasJoinedShow, canCallShow,
+    specialAction, mustPassNormal,
     createRoom, joinRoom, startGame,
-    revealChit, selectChit, passChit, callShow, joinShow,
+    revealChit, onChitClick, passChit, useSpecial,
+    giverSnatchRespond, giverSnatchPick,
+    randomSnatchPickPlayer, randomSnatchPickChit,
+    callShow, joinShow,
     nextRound, endGame, playAgain, leaveRoom,
   } = useGame()
 
@@ -30,7 +35,6 @@ export default function App() {
 
   const phase = room?.phase
 
-  // Screen transitions
   useEffect(() => {
     if (!phase) return
     if (phase === 'lobby') setScreen('lobby')
@@ -38,28 +42,22 @@ export default function App() {
     if (phase === 'ended') setScreen('end')
   }, [phase])
 
-  // Wire reveal to also animate 3D scene
-  const handleReveal = useCallback((i) => {
-    revealChit(i)
-    revealInScene(i)
-  }, [revealChit, revealInScene])
+  // Wire reveal to 3D scene
+  const handleChitClick = useCallback((i) => {
+    const wasRevealed = myRevealed[i]
+    onChitClick(i)
+    if (!wasRevealed) revealInScene(i)
+    else {
+      if (selectedChit !== -1 && selectedChit !== i) selectInScene(selectedChit, false)
+      selectInScene(i, selectedChit !== i)
+    }
+  }, [onChitClick, myRevealed, revealInScene, selectInScene, selectedChit])
 
-  // Wire select to also animate 3D scene
-  const handleSelect = useCallback((i) => {
-    selectChit(i)
-    // Deselect previous
-    if (selectedChit !== -1 && selectedChit !== i) selectInScene(selectedChit, false)
-    selectInScene(i, selectedChit !== i)
-  }, [selectChit, selectInScene, selectedChit])
-
-  async function onCreate(name) {
-    await createRoom(name); setScreen('lobby')
-  }
+  async function onCreate(name) { await createRoom(name); setScreen('lobby') }
   function onGoJoin(name) { setPendingName(name); setScreen('join') }
   async function onJoin(code, done) {
     try { await joinRoom(pendingName, code); setScreen('lobby') }
-    catch {}
-    finally { done?.() }
+    catch {} finally { done?.() }
   }
   function onLeave() { leaveRoom(); setScreen('landing') }
 
@@ -67,35 +65,21 @@ export default function App() {
 
   return (
     <>
-      {/* Three.js canvas — always mounted so scene initialises */}
+      {/* Three.js canvas */}
       <canvas
         id="three-canvas"
         ref={canvasRef}
         style={{ display: inGame ? 'block' : 'none' }}
       />
 
-      {/* UI root */}
       <div id="ui-root">
 
-        {/* ── Landing ── */}
-        {screen === 'landing' && (
-          <LandingScreen onCreate={onCreate} onGoJoin={onGoJoin} />
-        )}
-
-        {/* ── Join ── */}
-        {screen === 'join' && (
-          <JoinScreen onJoin={onJoin} onBack={()=>setScreen('landing')} errorMsg={errorMsg} />
-        )}
-
-        {/* ── Lobby ── */}
+        {screen === 'landing' && <LandingScreen onCreate={onCreate} onGoJoin={onGoJoin} />}
+        {screen === 'join'    && <JoinScreen onJoin={onJoin} onBack={()=>setScreen('landing')} errorMsg={errorMsg} />}
         {screen === 'lobby' && room && (
-          <LobbyScreen
-            room={room} me={me} isHost={isHost} wsStatus={wsStatus}
-            onStart={startGame} onLeave={onLeave}
-          />
+          <LobbyScreen room={room} me={me} isHost={isHost} wsStatus={wsStatus} onStart={startGame} onLeave={onLeave} />
         )}
 
-        {/* ── Game UI overlay ── */}
         {screen === 'game' && room && (
           <>
             {/* Top bar */}
@@ -112,32 +96,20 @@ export default function App() {
               <WsStatus status={wsStatus} />
             </div>
 
-            {/* Status pill */}
-            <StatusPill room={room} isMyTurn={isMyTurn} turnPlayer={turnPlayer} />
-
-            {/* Scoreboard */}
+            <StatusPill room={room} isMyTurn={isMyTurn} turnPlayer={turnPlayer} mustPassNormal={mustPassNormal} />
             <Scoreboard room={room} myIdx={myIdx} />
-
-            {/* Game log */}
             <GameLog logs={logs} />
 
-            {/* Show window */}
             {phase === 'showWindow' && (
-              <ShowWindowOverlay
-                countdown={countdown}
-                canJoinShow={canJoinShow}
-                hasJoinedShow={hasJoinedShow}
-                onJoinShow={joinShow}
-              />
+              <ShowWindowOverlay countdown={countdown} canJoinShow={canJoinShow} hasJoinedShow={hasJoinedShow} onJoinShow={joinShow} />
             )}
 
-            {/* Round end controls */}
             {phase === 'roundEnd' && (
               <RoundEndControls isHost={isHost} onNextRound={nextRound} onEndGame={endGame} />
             )}
 
-            {/* Hand HUD */}
-            {phase !== 'roundEnd' && phase !== 'afterShow' && (
+            {/* Hand HUD — hide only when show window or after show */}
+            {!['showWindow','afterShow'].includes(phase) && (
               <HandHud
                 myPlayer={myPlayer}
                 myRevealed={myRevealed}
@@ -145,29 +117,45 @@ export default function App() {
                 isMyTurn={isMyTurn}
                 phase={phase}
                 canCallShow={canCallShow}
-                onReveal={handleReveal}
-                onSelect={handleSelect}
-                onPass={()=>passChit(selectedChit)}
+                mustPassNormal={mustPassNormal}
+                specialAction={specialAction}
+                onChitClick={handleChitClick}
+                onPass={passChit}
                 onCallShow={callShow}
               />
             )}
 
+            {/* Special modals */}
+            <SpecialModalManager
+              specialAction={specialAction}
+              room={room}
+              myIdx={myIdx}
+              myPlayer={myPlayer}
+              onUse={useSpecial}
+              onPass={(chitIdx) => passChit(chitIdx)}
+              onCancel={() => setSelectedChit(-1)}
+              onGiverSnatchRespond={giverSnatchRespond}
+              onGiverSnatchPick={giverSnatchPick}
+              onRandomSnatchPickPlayer={randomSnatchPickPlayer}
+              onRandomSnatchPickChit={randomSnatchPickChit}
+            />
+
             {errorMsg && (
-              <div style={{ position:'fixed', bottom:200, left:'50%', transform:'translateX(-50%)',
+              <div style={{
+                position:'fixed', bottom:200, left:'50%', transform:'translateX(-50%)',
                 zIndex:25, padding:'8px 16px', borderRadius:8,
                 background:'rgba(248,113,113,.12)', border:'1px solid rgba(248,113,113,.3)',
-                color:'#F87171', fontSize:13, fontWeight:500, whiteSpace:'nowrap' }}>
+                color:'#F87171', fontSize:13, fontWeight:500, whiteSpace:'nowrap'
+              }}>
                 {errorMsg}
               </div>
             )}
           </>
         )}
 
-        {/* ── End screen ── */}
         {screen === 'end' && room && (
           <EndScreen room={room} onPlayAgain={playAgain} onLeave={onLeave} />
         )}
-
       </div>
     </>
   )
