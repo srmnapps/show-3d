@@ -1,155 +1,230 @@
-import { AVATAR_COLORS, MEDALS, isSpecial, chitDisplay } from '../utils/game.js'
+import { AVATAR_COLORS, MEDALS, SEAT_COLORS, isSpecial, chitDisplay } from '../utils/game.js'
 import { initials } from '../utils/helpers.js'
 
 // ── WsStatus ──────────────────────────────────────────────────
 export function WsStatus({ status }) {
-  const color = status==='connected' ? '#4ADE80' : status==='connecting' ? '#FBBF24' : '#F87171'
-  const label = status==='connected' ? 'Live' : status==='connecting' ? 'Connecting…' : 'Offline'
+  const color = status==='connected'?'#43A047':status==='connecting'?'#FFD600':'#E53935'
+  const label = status==='connected'?'LIVE':status==='connecting'?'...':'OFF'
   return (
     <span className="ws-dot">
-      <span className="ws-dot-circle" style={{ background:color, boxShadow:`0 0 6px ${color}` }} />
+      <span className="ws-dot-circle" style={{ background:color, boxShadow:`0 0 6px ${color}` }}/>
       {label}
     </span>
   )
 }
 
-// ── Single HUD card (CSS 3D) ─────────────────────────────────
-export function HudCard({ chit, revealed, selected, onClick }) {
+// ── Single hand card (UNO fan style) ─────────────────────────
+export function HandCard({ chit, revealed, selected, onClick, arcIndex, totalCards, stunned }) {
   const special = isSpecial(chit)
   const display = chitDisplay(chit)
+  const mid     = (totalCards - 1) / 2
+  const angle   = (arcIndex - mid) * 5
+  const lift    = Math.abs(arcIndex - mid) * 3
 
-  let cls = 'hud-card'
-  if (selected) cls += ' selected'
+  const isBlind = stunned  // stunned = cards show as ? even if revealed
 
-  const innerStyle = {
-    position:'absolute', inset:0, borderRadius:8,
-    display:'flex', alignItems:'center', justifyContent:'center',
-    fontSize: revealed ? 26 : 22,
-    border: `1.5px solid ${
-      selected    ? 'rgba(245,200,66,.6)'  :
-      special     ? 'rgba(155,127,255,.5)' :
-      revealed    ? 'rgba(255,255,255,.12)':
-                    'rgba(100,120,255,.2)'
-    }`,
-    background: selected
-      ? 'linear-gradient(145deg, rgba(245,200,66,.15), rgba(245,200,66,.05))'
-      : special && revealed
-      ? 'linear-gradient(145deg, rgba(155,127,255,.2), rgba(155,127,255,.06))'
-      : revealed
-      ? 'linear-gradient(145deg, #fafafa, #e8e8e8)'
-      : 'linear-gradient(145deg, #1a2060, #0d0d2a)',
+  const style = {
+    width:58, height:82, borderRadius:10,
+    position:'relative', flexShrink:0,
+    cursor:'pointer', userSelect:'none',
+    transform: selected
+      ? `perspective(500px) rotateX(5deg) translateY(-26px) rotate(0deg) scale(1.09)`
+      : `perspective(500px) rotateX(5deg) rotate(${angle}deg) translateY(${lift}px)`,
+    transition:'transform .18s, box-shadow .18s',
+    boxShadow: selected
+      ? '0 0 0 3px #FFD600, 0 12px 30px rgba(0,0,0,.6)'
+      : '0 4px 14px rgba(0,0,0,.55)',
+    marginLeft: arcIndex===0 ? 0 : -12,
+    zIndex: selected ? 10 : arcIndex,
   }
 
-  const shadowStyle = {
-    boxShadow: selected
-      ? '0 0 24px rgba(245,200,66,.5), 0 8px 24px rgba(0,0,0,.7)'
-      : special && revealed
-      ? '0 0 16px rgba(155,127,255,.3), 0 4px 12px rgba(0,0,0,.6)'
-      : revealed
-      ? '0 4px 16px rgba(0,0,0,.6)'
-      : '0 4px 12px rgba(0,0,0,.5)',
+  const faceStyle = {
+    position:'absolute', inset:0, borderRadius:9,
+    display:'flex', alignItems:'center', justifyContent:'center',
+    flexDirection:'column', gap:3,
+    border:'2px solid rgba(255,255,255,.18)',
+    overflow:'hidden',
+    background: (isBlind || !revealed)
+      ? 'linear-gradient(135deg,#1a237e 0%,#283593 50%,#1a237e 100%)'
+      : special
+      ? 'linear-gradient(135deg,#6a0dad,#9c27b0)'
+      : '#fff',
   }
 
   return (
-    <div className={cls} style={shadowStyle} onClick={onClick}>
-      <div style={innerStyle}>
-        {revealed
-          ? <span style={{
-              filter: revealed && !special ? 'drop-shadow(0 1px 2px rgba(0,0,0,.3))' : 'none',
-              color:  special ? 'inherit' : undefined,
-            }}>{display}</span>
-          : <span style={{ fontSize:15, fontWeight:800, color:'rgba(155,127,255,.4)',
-              fontFamily:"'Syne',sans-serif" }}>?</span>
-        }
-        {/* Special badge */}
-        {revealed && special && (
-          <span style={{
-            position:'absolute', bottom:3, left:0, right:0,
-            textAlign:'center', fontSize:8, fontWeight:700,
-            color:'rgba(155,127,255,.8)', letterSpacing:.5,
-            fontFamily:"'Syne',sans-serif",
-          }}>SPECIAL</span>
+    <div style={style} onClick={onClick}>
+      <div style={faceStyle}>
+        {(isBlind || !revealed) ? (
+          <>
+            <div style={{
+              position:'absolute', inset:5, borderRadius:6,
+              backgroundImage:'radial-gradient(circle,rgba(255,255,255,.15) 1.5px,transparent 1.5px)',
+              backgroundSize:'8px 8px',
+            }}/>
+            <span style={{ fontSize:22, fontFamily:"'Fredoka One',cursive", color:'rgba(255,255,255,.5)', position:'relative' }}>
+              {stunned ? '💥' : '?'}
+            </span>
+          </>
+        ) : (
+          <>
+            <span style={{ fontSize:28, lineHeight:1 }}>{display}</span>
+            {special && <span style={{ fontSize:8, fontWeight:900, color:'rgba(255,255,255,.8)', textTransform:'uppercase', letterSpacing:.5 }}>SPECIAL</span>}
+          </>
         )}
       </div>
     </div>
   )
 }
 
-// ── My hand HUD at bottom ────────────────────────────────────
+// ── Player seat around the table ─────────────────────────────
+function getSeatPos(relIdx, total) {
+  const seats = {
+    2: [
+      { bottom:'13%', left:'50%', transform:'translateX(-50%)' },
+      { top:'10%',    left:'50%', transform:'translateX(-50%)' },
+    ],
+    3: [
+      { bottom:'13%', left:'50%',  transform:'translateX(-50%)' },
+      { top:'12%',    left:'16%',  transform:'none' },
+      { top:'12%',    right:'16%', transform:'none' },
+    ],
+    4: [
+      { bottom:'13%', left:'50%',  transform:'translateX(-50%)' },
+      { top:'50%',    left:'3%',   transform:'translateY(-50%)' },
+      { top:'10%',    left:'50%',  transform:'translateX(-50%)' },
+      { top:'50%',    right:'3%',  transform:'translateY(-50%)' },
+    ],
+    5: [
+      { bottom:'13%', left:'50%',  transform:'translateX(-50%)' },
+      { top:'50%',    left:'2%',   transform:'translateY(-50%)' },
+      { top:'10%',    left:'20%',  transform:'none' },
+      { top:'10%',    right:'20%', transform:'none' },
+      { top:'50%',    right:'2%',  transform:'translateY(-50%)' },
+    ],
+  }
+  return (seats[total] ?? seats[2])[relIdx] ?? { bottom:'13%', left:'50%', transform:'translateX(-50%)' }
+}
+
+export function PlayerSeat({ player, idx, myIdx, totalPlayers, isActive, isFrozen, isStunned, isMe }) {
+  const relIdx = (idx - myIdx + totalPlayers) % totalPlayers
+  const pos    = getSeatPos(relIdx, totalPlayers)
+  const color  = SEAT_COLORS[idx % SEAT_COLORS.length]
+  const normalCount  = player.chits.filter(c => !isSpecial(c)).length
+  const specialCount = player.chits.filter(c => isSpecial(c)).length
+
+  return (
+    <div className="seat" style={{ ...pos, position:'fixed' }}>
+      {/* Active glow ring */}
+      {isActive && (
+        <div style={{
+          width:12, height:12, borderRadius:'50%',
+          background:color, boxShadow:`0 0 14px ${color},0 0 28px ${color}`,
+        }}/>
+      )}
+
+      {/* Name plate */}
+      <div className={`seat-plate${isActive?' active':''}${isFrozen?' frozen':''}${isStunned?' stunned':''}`}
+        style={{ borderColor: isActive ? color : undefined }}>
+        <div className="avatar" style={{
+          background:color+'22', color, width:24, height:24, fontSize:11,
+          border:`1.5px solid ${color}`,
+        }}>
+          {initials(player.name)}
+        </div>
+        <span className="seat-name" style={{ color: isMe ? color : '#fff' }}>
+          {player.name}{isMe ? ' (you)' : ''}
+        </span>
+        <span className="seat-score">{player.score>0?'+':''}{player.score}</span>
+        {isFrozen  && <span style={{ fontSize:13 }}>🧊</span>}
+        {isStunned && <span style={{ fontSize:13 }}>💥</span>}
+        {player.isShow && <span style={{ fontSize:13 }}>🔥</span>}
+      </div>
+
+      {/* Card count */}
+      <div style={{
+        display:'flex', gap:5, alignItems:'center',
+        padding:'3px 10px', borderRadius:12,
+        background:'rgba(0,0,0,.55)', border:`1px solid ${color}33`,
+      }}>
+        <span style={{ fontSize:12 }}>🃏</span>
+        <span style={{ fontSize:12, fontWeight:900, color:'rgba(255,255,255,.75)' }}>{player.chits.length}</span>
+        {specialCount>0 && (
+          <span style={{ fontSize:10, color:'#c084fc', fontWeight:900 }}>✦{specialCount}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Hand HUD ──────────────────────────────────────────────────
 export function HandHud({
   myPlayer, myRevealed, selectedChit, isMyTurn, phase,
-  canCallShow, mustPassNormal, specialAction,
-  onChitClick, onPass, onCallShow
+  canCallShow, mustPassNormal, specialAction, amIStunned,
+  onChitClick, onPass, onCallShow,
 }) {
   if (!myPlayer) return null
-  const chits = myPlayer.chits ?? []
+  const chits   = myPlayer.chits ?? []
+  const blocked = !!specialAction
 
-  const actionBlocked = !!specialAction  // a modal is open
-
-  // hint text below cards
   let hint = ''
-  if (mustPassNormal) hint = 'Special used — now pass a normal chit'
-  else if (isMyTurn && phase === 'playing') hint = 'Tap a card to reveal · Select to pass'
-  else if (phase === 'playing') hint = 'Tap cards to peek'
+  if (amIStunned && isMyTurn)              hint = '💥 You are stunned! Pass a chit blind!'
+  else if (mustPassNormal)                 hint = '✨ Special used — pass a normal chit'
+  else if (isMyTurn && phase==='playing')  hint = 'Tap to reveal · Select to pass'
+  else if (phase==='playing')              hint = 'Tap cards to peek 👀'
 
   return (
     <div className="hand-hud">
-      {/* Cards */}
+      {/* Stun indicator */}
+      {amIStunned && (
+        <div style={{
+          textAlign:'center', padding:'6px 16px', borderRadius:20,
+          background:'rgba(229,57,53,.2)', border:'1px solid rgba(229,57,53,.5)',
+          color:'#EF5350', fontSize:13, fontWeight:900,
+          animation:'stunPulse 1s ease-in-out infinite',
+        }}>
+          💥 STUNNED — Pass blind!
+        </div>
+      )}
+
+      {/* Fan of cards */}
       <div className="hand-cards">
         {chits.map((c, i) => (
-          <HudCard
-            key={i}
-            chit={c}
+          <HandCard
+            key={i} chit={c}
             revealed={myRevealed[i] || false}
-            selected={selectedChit === i}
-            onClick={() => !actionBlocked && onChitClick(i)}
+            selected={selectedChit===i}
+            stunned={amIStunned}
+            arcIndex={i} totalCards={chits.length}
+            onClick={() => !blocked && onChitClick(i)}
           />
         ))}
-        {chits.length === 0 && (
-          <span style={{ color:'var(--muted)', fontSize:12 }}>No chits</span>
+        {chits.length===0 && (
+          <span style={{ color:'rgba(255,255,255,.4)', fontSize:13, fontWeight:800 }}>No chits</span>
         )}
       </div>
 
       {hint && (
-        <div style={{ textAlign:'center', fontSize:11, color:'var(--muted)', letterSpacing:.3 }}>
+        <div style={{ textAlign:'center', fontSize:12, color:'rgba(255,255,255,.55)', fontWeight:800 }}>
           {hint}
         </div>
       )}
 
-      {/* Action buttons */}
       <div className="action-row">
-        {/* Pass button — visible when it's my turn (or must pass after special) */}
-        {phase === 'playing' && (isMyTurn || mustPassNormal) && (
-          <button
-            className="btn btn-teal btn-lg"
-            disabled={selectedChit === -1 || actionBlocked}
-            onClick={() => onPass(selectedChit)}
-          >
-            {mustPassNormal ? 'Pass Normal →' : 'Pass →'}
+        {phase==='playing' && (isMyTurn||mustPassNormal) && (
+          <button className="btn btn-blue btn-lg"
+            disabled={selectedChit===-1||blocked}
+            onClick={() => onPass(selectedChit)}>
+            {mustPassNormal ? '📤 Pass Normal' : amIStunned ? '🙈 Pass Blind' : '📤 Pass Chit'}
           </button>
         )}
-
-        {/* Show button */}
-        {phase === 'playing' && canCallShow && !mustPassNormal && (
-          <button className="btn btn-coral btn-lg" disabled={actionBlocked} onClick={onCallShow}>
-            🎉 Show!
+        {phase==='playing' && canCallShow && !mustPassNormal && !amIStunned && (
+          <button className="btn btn-red btn-lg pulse" disabled={blocked} onClick={onCallShow}>
+            🎉 SHOW!
           </button>
         )}
-
-        {/* Waiting */}
-        {phase === 'playing' && !isMyTurn && !mustPassNormal && (
-          <span style={{ fontSize:12, color:'var(--muted)' }}>
-            Tap your cards to peek
-          </span>
-        )}
-
-        {/* Direction indicator */}
-        {phase === 'playing' && (
-          <span style={{
-            fontSize:11, color:'var(--muted)', alignSelf:'center',
-            display:'flex', alignItems:'center', gap:4
-          }}>
-            {/* direction shown in scoreboard */}
+        {phase==='playing' && !isMyTurn && !mustPassNormal && (
+          <span style={{ fontSize:12, color:'rgba(255,255,255,.4)', fontWeight:800 }}>
+            Waiting for your turn…
           </span>
         )}
       </div>
@@ -157,180 +232,114 @@ export function HandHud({
   )
 }
 
-// ── Scoreboard (top right) ───────────────────────────────────
-export function Scoreboard({ room, myIdx }) {
-  if (!room) return null
-  const dir = room.direction === 1 ? '→' : '←'
-  return (
-    <div className="scoreboard">
-      {/* Direction indicator */}
-      {room.phase === 'playing' && (
-        <div style={{
-          textAlign:'center', fontSize:10, color:'var(--muted)',
-          padding:'3px 8px', background:'rgba(155,127,255,.06)',
-          borderRadius:6, border:'1px solid var(--border)',
-          marginBottom:4, letterSpacing:.5
-        }}>
-          {dir} {room.direction === 1 ? 'Clockwise' : 'Counter'}
-        </div>
-      )}
-      {room.players.map((p, i) => {
-        const ac = AVATAR_COLORS[p.color] ?? AVATAR_COLORS[0]
-        const isActive = room.currentTurn === i && room.phase === 'playing'
-        const isFrozen = room.frozenPlayer === i
-        const isShow   = p.isShow
-        let cls = 'score-entry fade-up'
-        if (isActive) cls += ' active-turn'
-        if (isShow)   cls += ' is-show'
-        const normalCount  = p.chits.filter(c => !isSpecial(c)).length
-        const specialCount = p.chits.filter(c => isSpecial(c)).length
-        return (
-          <div key={p.id} className={cls} style={{
-            opacity: isFrozen ? .5 : 1,
-            borderColor: isFrozen ? 'rgba(45,212,191,.4)' : undefined,
-          }}>
-            <div className="avatar" style={{ background:ac.bg, color:ac.fg, width:24, height:24, fontSize:10 }}>
-              {initials(p.name)}
-            </div>
-            <span style={{ flex:1, fontSize:11, fontWeight:600, color: i===myIdx ? 'var(--purple)' : 'var(--text)' }}>
-              {p.name.length > 8 ? p.name.slice(0,8)+'…' : p.name}
-            </span>
-            <span style={{
-              fontFamily:"'Syne',sans-serif", fontWeight:800, fontSize:12,
-              color: p.score > 0 ? 'var(--gold)' : 'var(--muted)'
-            }}>
-              {p.score > 0 ? '+' : ''}{p.score}
-            </span>
-            {isActive  && <span style={{ fontSize:9, color:'var(--teal)' }}>▶</span>}
-            {isFrozen  && <span style={{ fontSize:10 }}>🧊</span>}
-            {isShow    && <span style={{ fontSize:10 }}>🔥</span>}
-            {specialCount > 0 && (
-              <span style={{ fontSize:9, color:'var(--purple)', fontWeight:700 }}>✦{specialCount}</span>
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-// ── Game Log (top left) ──────────────────────────────────────
+// ── Game Log ──────────────────────────────────────────────────
 export function GameLog({ logs }) {
   return (
-    <div className="log-panel glass">
-      <div className="section-label" style={{ marginBottom:4 }}>Log</div>
+    <div className="log-panel">
+      <div className="section-label" style={{ marginBottom:6 }}>📜 LOG</div>
       {logs.slice(0,10).map((l, i) => (
         <div key={i} className="log-entry">› {l}</div>
       ))}
+      {logs.length===0 && <div className="log-entry" style={{ color:'rgba(255,255,255,.25)' }}>No actions yet…</div>}
     </div>
   )
 }
 
-// ── Status pill (top center) ─────────────────────────────────
-export function StatusPill({ room, isMyTurn, turnPlayer, mustPassNormal }) {
-  if (!room || room.phase === 'lobby') return null
+// ── Status pill ───────────────────────────────────────────────
+export function StatusPill({ room, isMyTurn, turnPlayer, mustPassNormal, amIStunned }) {
+  if (!room || room.phase==='lobby') return null
   const { phase } = room
-  let cls = 'status-pill glass '
-  let text = ''
-
-  if (phase === 'playing') {
-    if (mustPassNormal) {
-      cls += 'status-playing'
-      text = '✨ Special used — now pass a normal chit!'
-    } else {
-      cls  += isMyTurn ? 'status-playing' : 'status-wait'
-      text  = isMyTurn ? '✋ Your turn!' : `${turnPlayer?.name}'s turn…`
-    }
-  } else if (phase === 'showWindow') {
-    cls += 'status-show'; text = '🎉 Show Window Open!'
-  } else if (phase === 'afterShow') {
-    cls += 'status-show'; text = '👀 Revealing all hands…'
-  } else if (phase === 'roundEnd') {
-    cls += 'status-roundend'; text = `⚡ Round ${room.round} complete!`
-  } else if (phase === 'giverSnatching') {
-    cls += 'status-show'; text = '👁 Giver Snatch in play!'
-  } else if (phase === 'randomSnatching' || phase === 'giverSnatchPicking') {
-    cls += 'status-show'; text = '🎲 Special card in action!'
+  let cls='status-pill ', text=''
+  if (phase==='playing') {
+    if (amIStunned && isMyTurn) { cls+='status-show';    text='💥 You\'re stunned — pass blind!' }
+    else if (mustPassNormal)    { cls+='status-playing'; text='✨ Now pass a normal chit!' }
+    else if (isMyTurn)          { cls+='status-playing'; text='✋ YOUR TURN!' }
+    else                        { cls+='status-wait';    text=`${turnPlayer?.name}'s turn…` }
   }
-
+  else if (phase==='showWindow')              { cls+='status-show';     text='🎉 SHOW WINDOW OPEN!' }
+  else if (phase==='afterShow')               { cls+='status-show';     text='👀 Revealing hands…' }
+  else if (phase==='roundEnd')                { cls+='status-roundend'; text=`⚡ Round ${room.round} done!` }
+  else if (phase==='randomSnatching')         { cls+='status-show';     text='🎲 Random Snatch!' }
+  else if (phase==='stunGrenade')             { cls+='status-show';     text='💥 Stun Grenade!' }
+  if (!text) return null
   return <div className={cls}>{text}</div>
 }
 
-// ── Show window overlay ──────────────────────────────────────
+// ── Show window overlay ───────────────────────────────────────
 export function ShowWindowOverlay({ countdown, canJoinShow, hasJoinedShow, onJoinShow }) {
   return (
-    <div className="countdown-ring">
-      <div className="countdown-num">{countdown}</div>
+    <div className="countdown-ring" style={{ pointerEvents:'auto' }}>
+      <div className="countdown-num bounce">{countdown}</div>
       <div className="countdown-label">seconds left</div>
       {canJoinShow && (
-        <button className="btn btn-coral btn-lg pulse" style={{ marginTop:16 }} onClick={onJoinShow}>
-          🎉 Join Show!
+        <button className="btn btn-red btn-xl pulse" style={{ marginTop:16 }} onClick={onJoinShow}>
+          🎉 JOIN SHOW!
         </button>
       )}
       {hasJoinedShow && (
-        <div style={{ marginTop:12, color:'var(--teal)', fontWeight:700, fontSize:14 }}>✓ Joined!</div>
-      )}
-    </div>
-  )
-}
-
-// ── Round end controls ───────────────────────────────────────
-export function RoundEndControls({ isHost, onNextRound, onEndGame }) {
-  return (
-    <div style={{
-      position:'fixed', bottom:140, left:'50%', transform:'translateX(-50%)',
-      display:'flex', gap:10, zIndex:20
-    }}>
-      {isHost ? (
-        <>
-          <button className="btn btn-gold btn-lg" onClick={onNextRound}>Next Round ▶</button>
-          <button className="btn btn-ghost" onClick={onEndGame}>End Game</button>
-        </>
-      ) : (
-        <div className="glass" style={{ padding:'10px 18px', borderRadius:10, fontSize:13, color:'var(--muted)' }}>
-          Waiting for host…
+        <div className="btn btn-green" style={{ marginTop:16, pointerEvents:'none' }}>
+          ✓ YOU'RE IN!
         </div>
       )}
     </div>
   )
 }
 
-// ── End Screen ───────────────────────────────────────────────
+// ── Round end controls ────────────────────────────────────────
+export function RoundEndControls({ isHost, onNextRound, onEndGame }) {
+  return (
+    <div className="round-end-controls">
+      {isHost ? (
+        <>
+          <button className="btn btn-green btn-lg" onClick={onNextRound}>▶ Next Round</button>
+          <button className="btn btn-white"        onClick={onEndGame}>End Game</button>
+        </>
+      ) : (
+        <div style={{ padding:'10px 18px', borderRadius:30, background:'rgba(0,0,0,.6)', backdropFilter:'blur(10px)', border:'1px solid rgba(255,255,255,.12)', fontSize:13, fontWeight:800, color:'rgba(255,255,255,.6)' }}>
+          ⏳ Waiting for host…
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── End Screen ────────────────────────────────────────────────
 export function EndScreen({ room, onPlayAgain, onLeave }) {
   const sorted = [...room.players].sort((a,b) => b.score-a.score)
   return (
     <div className="overlay">
       <div className="overlay-inner">
-        <div className="glass" style={{ padding:'28px 24px', textAlign:'center' }}>
-          <div style={{ fontSize:56, marginBottom:'.75rem', filter:'drop-shadow(0 0 24px rgba(245,200,66,.5))' }}>🏆</div>
-          <h2 className="font-display" style={{ fontSize:'2rem', fontWeight:800, color:'var(--gold)',
-            textShadow:'0 0 24px rgba(245,200,66,.5)', marginBottom:'.3rem' }}>
-            Game Over!
-          </h2>
-          <p style={{ color:'var(--muted)', fontSize:13, marginBottom:'1.5rem' }}>
-            {sorted[0]?.name} wins with <span style={{ color:'var(--gold)', fontWeight:700 }}>{sorted[0]?.score}</span> pts
+        <div className="panel" style={{ padding:'28px 24px', textAlign:'center' }}>
+          <div style={{ fontSize:60, marginBottom:'.5rem' }} className="bounce">🏆</div>
+          <h2 style={{
+            fontFamily:"'Fredoka One',cursive", fontSize:'2.2rem', marginBottom:'.3rem',
+            background:'linear-gradient(135deg,#E53935,#FFD600,#1E88E5,#43A047)',
+            WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', backgroundClip:'text',
+          }}>GAME OVER!</h2>
+          <p style={{ color:'rgba(255,255,255,.55)', fontSize:13, fontWeight:800, marginBottom:'1.5rem' }}>
+            {sorted[0]?.name} wins with <span style={{ color:'#FFD600', fontFamily:"'Fredoka One',cursive", fontSize:18 }}>{sorted[0]?.score}</span> pts!
           </p>
-          <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:'1.5rem', textAlign:'left' }}>
+          <div style={{ display:'flex', flexDirection:'column', gap:7, marginBottom:'1.5rem', textAlign:'left' }}>
             {sorted.map((p, i) => {
-              const ac = AVATAR_COLORS[p.color] ?? AVATAR_COLORS[0]
+              const pidx = room.players.findIndex(pl => pl.id===p.id)
+              const sc   = SEAT_COLORS[pidx % SEAT_COLORS.length]
               return (
                 <div key={p.id} className={`score-row${i===0?' first':''}`}>
                   <span style={{ fontSize:20, width:26 }}>{MEDALS[i]}</span>
-                  <div className="avatar" style={{ background:ac.bg, color:ac.fg, width:28, height:28, fontSize:10 }}>
+                  <div className="avatar" style={{ background:sc+'22', color:sc, border:`1.5px solid ${sc}` }}>
                     {initials(p.name)}
                   </div>
-                  <span style={{ flex:1, fontSize:13, fontWeight:600 }}>{p.name}</span>
-                  <span className="font-display" style={{
-                    fontSize:20, fontWeight:800,
-                    color: i===0 ? 'var(--gold)' : 'var(--text-dim)',
-                  }}>{p.score}</span>
+                  <span style={{ flex:1, fontSize:13, fontWeight:900, color:'#fff' }}>{p.name}</span>
+                  <span style={{ fontFamily:"'Fredoka One',cursive", fontSize:20, color:i===0?'#FFD600':'rgba(255,255,255,.45)' }}>
+                    {p.score}
+                  </span>
                 </div>
               )
             })}
           </div>
           <div className="btn-row" style={{ justifyContent:'center', gap:10 }}>
-            <button className="btn btn-gold btn-lg" onClick={onPlayAgain}>Play Again</button>
-            <button className="btn btn-ghost" onClick={onLeave}>Leave</button>
+            <button className="btn btn-yellow btn-lg" onClick={onPlayAgain}>🔄 Play Again</button>
+            <button className="btn btn-ghost"         onClick={onLeave}>Leave</button>
           </div>
         </div>
       </div>

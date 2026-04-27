@@ -1,18 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useGame } from './hooks/useGame.js'
-import { useScene } from './hooks/useScene.js'
 import {
-  WsStatus, HandHud, Scoreboard, GameLog,
+  WsStatus, HandHud, PlayerSeat, GameLog,
   StatusPill, ShowWindowOverlay, RoundEndControls, EndScreen
 } from './components/UI.jsx'
 import { SpecialModalManager } from './components/SpecialModals.jsx'
-import { LandingScreen, JoinScreen, LobbyScreen } from './components/Screens.jsx'
+import { LandingPage, CreateJoinScreen, JoinScreen, LobbyScreen } from './components/Screens.jsx'
 
-const GAME_PHASES = ['playing','showWindow','afterShow','roundEnd','giverSnatching','randomSnatching','giverSnatchPicking']
+const GAME_PHASES = ['playing','showWindow','afterShow','roundEnd','randomSnatching','stunGrenade']
 
 export default function App() {
-  const [screen,      setScreen]      = useState('landing')
-  const [pendingName, setPendingName] = useState('')
+  const [screen,      setScreen]      = useState('landing')   // landing|createjoin|join|lobby|game|end
+  const [playerName,  setPlayerName]  = useState('')
   const canvasRef = useRef(null)
 
   const {
@@ -20,18 +19,13 @@ export default function App() {
     errorMsg, loading, wsStatus,
     isHost, myPlayer, isMyTurn, turnPlayer, showAll,
     myRevealed, countdown, canJoinShow, hasJoinedShow, canCallShow,
-    specialAction, mustPassNormal,
-    createRoom, joinRoom, startGame,
-    revealChit, onChitClick, passChit, useSpecial,
-    giverSnatchRespond, giverSnatchPick,
-    randomSnatchPickPlayer, randomSnatchPickChit,
+    specialAction, mustPassNormal, stunFlash, isStunned, amIStunned,
+    createRoom, joinRoom, startGame, setMode,
+    revealChit, onChitClick, passChit, useSpecial, cancelSpecial,
+    randomSnatchPickPlayer, stunGrenadePickPlayer,
     callShow, joinShow,
     nextRound, endGame, playAgain, leaveRoom,
   } = useGame()
-
-  const { sceneRef, revealInScene, selectInScene } = useScene(
-    canvasRef, room, myIdx, selectedChit, showAll
-  )
 
   const phase = room?.phase
 
@@ -42,84 +36,144 @@ export default function App() {
     if (phase === 'ended') setScreen('end')
   }, [phase])
 
-  // Wire reveal to 3D scene
-  const handleChitClick = useCallback((i) => {
-    const wasRevealed = myRevealed[i]
-    onChitClick(i)
-    if (!wasRevealed) revealInScene(i)
-    else {
-      if (selectedChit !== -1 && selectedChit !== i) selectInScene(selectedChit, false)
-      selectInScene(i, selectedChit !== i)
-    }
-  }, [onChitClick, myRevealed, revealInScene, selectInScene, selectedChit])
+  // ── Nav handlers ──────────────────────────────────────────
+  function onPlay(name) {
+    setPlayerName(name)
+    setScreen('createjoin')
+  }
 
-  async function onCreate(name) { await createRoom(name); setScreen('lobby') }
-  function onGoJoin(name) { setPendingName(name); setScreen('join') }
+  async function onCreate() {
+    await createRoom(playerName)
+    setScreen('lobby')
+  }
+
+  function onGoJoin() { setScreen('join') }
+
   async function onJoin(code, done) {
-    try { await joinRoom(pendingName, code); setScreen('lobby') }
+    try { await joinRoom(playerName, code); setScreen('lobby') }
     catch {} finally { done?.() }
   }
-  function onLeave() { leaveRoom(); setScreen('landing') }
+
+  function onLeave() {
+    leaveRoom()
+    setScreen('landing')
+  }
+
+  function onBack() {
+    setScreen(screen === 'join' ? 'createjoin' : 'landing')
+  }
 
   const inGame = screen === 'game'
 
   return (
     <>
-      {/* Three.js canvas */}
-      <canvas
-        id="three-canvas"
-        ref={canvasRef}
-        style={{ display: inGame ? 'block' : 'none' }}
-      />
+      {/* Hidden canvas — Three.js disabled in UNO mode */}
+      <canvas ref={canvasRef} id="three-canvas" style={{ display:'none' }} />
+
+      {/* Stun flash overlay */}
+      {stunFlash && <div className="stun-flash" />}
 
       <div id="ui-root">
 
-        {screen === 'landing' && <LandingScreen onCreate={onCreate} onGoJoin={onGoJoin} />}
-        {screen === 'join'    && <JoinScreen onJoin={onJoin} onBack={()=>setScreen('landing')} errorMsg={errorMsg} />}
-        {screen === 'lobby' && room && (
-          <LobbyScreen room={room} me={me} isHost={isHost} wsStatus={wsStatus} onStart={startGame} onLeave={onLeave} />
+        {/* ── Landing ── */}
+        {screen === 'landing' && <LandingPage onPlay={onPlay} />}
+
+        {/* ── Create or Join choice ── */}
+        {screen === 'createjoin' && (
+          <CreateJoinScreen
+            name={playerName}
+            onCreate={onCreate}
+            onJoin={onGoJoin}
+            onBack={() => setScreen('landing')}
+          />
         )}
 
+        {/* ── Join ── */}
+        {screen === 'join' && (
+          <JoinScreen
+            name={playerName}
+            onJoin={onJoin}
+            onBack={onBack}
+            errorMsg={errorMsg}
+          />
+        )}
+
+        {/* ── Lobby ── */}
+        {screen === 'lobby' && room && (
+          <LobbyScreen
+            room={room} me={me} isHost={isHost} wsStatus={wsStatus}
+            onStart={startGame} onLeave={onLeave}
+            onSetMode={setMode}
+          />
+        )}
+
+        {/* ── Game ── */}
         {screen === 'game' && room && (
           <>
             {/* Top bar */}
             <div className="top-bar">
-              <div style={{ display:'flex', flexDirection:'column' }}>
-                <span style={{ fontSize:9, color:'var(--muted)', fontWeight:700, letterSpacing:1, textTransform:'uppercase' }}>
-                  Round {room.round}
+              <div style={{ display:'flex', flexDirection:'column', gap:1 }}>
+                <span style={{ fontSize:9, color:'rgba(255,255,255,.5)', fontWeight:900, letterSpacing:1, textTransform:'uppercase' }}>
+                  Round {room.round} · {room.mode==='special'?'✨ Special':'🎯 Normal'}
                 </span>
-                <span className="font-display" style={{ fontWeight:800, color:'var(--gold)', letterSpacing:3, fontSize:14,
-                  textShadow:'0 0 12px rgba(245,200,66,.5)' }}>
+                <span style={{
+                  fontFamily:"'Fredoka One',cursive", fontWeight:400,
+                  fontSize:16, letterSpacing:3,
+                  background:'linear-gradient(135deg,#E53935,#FFD600,#1E88E5,#43A047)',
+                  WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', backgroundClip:'text',
+                }}>
                   {room.code}
                 </span>
               </div>
               <WsStatus status={wsStatus} />
             </div>
 
-            <StatusPill room={room} isMyTurn={isMyTurn} turnPlayer={turnPlayer} mustPassNormal={mustPassNormal} />
-            <Scoreboard room={room} myIdx={myIdx} />
+            {/* Status pill */}
+            <StatusPill
+              room={room} isMyTurn={isMyTurn}
+              turnPlayer={turnPlayer} mustPassNormal={mustPassNormal}
+              amIStunned={amIStunned}
+            />
+
+            {/* Player seats around the table */}
+            {room.players.map((player, i) => (
+              <PlayerSeat
+                key={player.id}
+                player={player} idx={i}
+                myIdx={myIdx} totalPlayers={room.players.length}
+                isActive={room.currentTurn===i && phase==='playing'}
+                isFrozen={room.frozenPlayer===i}
+                isStunned={room.stunnedPlayer===i}
+                isMe={i===myIdx}
+              />
+            ))}
+
+            {/* Game log */}
             <GameLog logs={logs} />
 
-            {phase === 'showWindow' && (
-              <ShowWindowOverlay countdown={countdown} canJoinShow={canJoinShow} hasJoinedShow={hasJoinedShow} onJoinShow={joinShow} />
+            {/* Show window */}
+            {phase==='showWindow' && (
+              <ShowWindowOverlay
+                countdown={countdown} canJoinShow={canJoinShow}
+                hasJoinedShow={hasJoinedShow} onJoinShow={joinShow}
+              />
             )}
 
-            {phase === 'roundEnd' && (
+            {/* Round end */}
+            {phase==='roundEnd' && (
               <RoundEndControls isHost={isHost} onNextRound={nextRound} onEndGame={endGame} />
             )}
 
-            {/* Hand HUD — hide only when show window or after show */}
+            {/* Hand HUD */}
             {!['showWindow','afterShow'].includes(phase) && (
               <HandHud
-                myPlayer={myPlayer}
-                myRevealed={myRevealed}
-                selectedChit={selectedChit}
-                isMyTurn={isMyTurn}
-                phase={phase}
-                canCallShow={canCallShow}
+                myPlayer={myPlayer} myRevealed={myRevealed}
+                selectedChit={selectedChit} isMyTurn={isMyTurn}
+                phase={phase} canCallShow={canCallShow}
                 mustPassNormal={mustPassNormal}
                 specialAction={specialAction}
-                onChitClick={handleChitClick}
+                amIStunned={amIStunned}
+                onChitClick={onChitClick}
                 onPass={passChit}
                 onCallShow={callShow}
               />
@@ -128,34 +182,36 @@ export default function App() {
             {/* Special modals */}
             <SpecialModalManager
               specialAction={specialAction}
-              room={room}
-              myIdx={myIdx}
-              myPlayer={myPlayer}
+              room={room} myIdx={myIdx}
               onUse={useSpecial}
-              onPass={(chitIdx) => passChit(chitIdx)}
-              onCancel={() => setSelectedChit(-1)}
-              onGiverSnatchRespond={giverSnatchRespond}
-              onGiverSnatchPick={giverSnatchPick}
+              onPass={passChit}
+              onCancel={cancelSpecial}
               onRandomSnatchPickPlayer={randomSnatchPickPlayer}
-              onRandomSnatchPickChit={randomSnatchPickChit}
+              onStunGrenadePickPlayer={stunGrenadePickPlayer}
             />
 
+            {/* Error toast */}
             {errorMsg && (
               <div style={{
                 position:'fixed', bottom:200, left:'50%', transform:'translateX(-50%)',
-                zIndex:25, padding:'8px 16px', borderRadius:8,
-                background:'rgba(248,113,113,.12)', border:'1px solid rgba(248,113,113,.3)',
-                color:'#F87171', fontSize:13, fontWeight:500, whiteSpace:'nowrap'
+                zIndex:25, padding:'10px 20px', borderRadius:30,
+                background:'rgba(229,57,53,.85)', backdropFilter:'blur(10px)',
+                border:'1px solid rgba(229,57,53,.6)',
+                color:'#fff', fontSize:14, fontWeight:900,
+                whiteSpace:'nowrap', boxShadow:'0 4px 20px rgba(229,57,53,.4)',
+                animation:'popIn .3s cubic-bezier(.34,1.56,.64,1)',
               }}>
-                {errorMsg}
+                ⚠️ {errorMsg}
               </div>
             )}
           </>
         )}
 
+        {/* ── End ── */}
         {screen === 'end' && room && (
           <EndScreen room={room} onPlayAgain={playAgain} onLeave={onLeave} />
         )}
+
       </div>
     </>
   )
