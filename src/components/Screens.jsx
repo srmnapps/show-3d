@@ -223,135 +223,158 @@ export function JoinScreen({ name, onJoin, onBack, errorMsg }) {
 // ── Lobby Screen ──────────────────────────────────────────────
 export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSetMode, setHandSetup, setEnabledSpecials }) {
   const [copied, setCopied] = useState(false)
+  const [specsOpen, setSpecsOpen] = useState(() => window.innerWidth >= 900)
+
   async function doCopy() {
     await copyToClipboard(room.code)
-    setCopied(true); setTimeout(() => setCopied(false), 1600)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1600)
   }
-  const mode     = room.mode ?? 'special'
-  const settings = room.settings ?? { normalCount: 4, specialCount: 2, enabledSpecials: SPECIALS.map(s => s.type) }
+
+  const mode           = room.mode ?? 'special'
+  const settings       = room.settings ?? { normalCount: 4, specialCount: 2, enabledSpecials: SPECIALS.map(s => s.type) }
+  const enabledSpecials = settings.enabledSpecials ?? SPECIALS.map(s => s.type)
 
   return (
-    <div className="overlay">
-      <div className="overlay-inner">
-        <div className="panel" style={{ padding:'24px' }}>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'1.25rem' }}>
-            <h2 style={{ fontFamily:"'Fredoka One',cursive", fontSize:'1.5rem', color:'#fff' }}>🏠 Lobby</h2>
-            <WsStatus status={wsStatus} />
-          </div>
+    <div className="lobby-wrap">
+      <div className="lobby-panel panel">
 
-          {/* Room code */}
-          <div style={{ textAlign:'center', marginBottom:'1.25rem', padding:'16px', borderRadius:14, background:'rgba(255,255,255,.04)', border:'1px solid rgba(255,255,255,.1)' }}>
-            <div className="section-label" style={{ marginBottom:6 }}>Share this code!</div>
-            <div className="room-code-display">{room.code}</div>
-            <button className="btn btn-ghost btn-sm" style={{ marginTop:10 }} onClick={doCopy}>
-              {copied ? '✓ Copied!' : '⎘ Copy Code'}
-            </button>
-          </div>
+        {/* Header */}
+        <div className="lobby-header">
+          <h2 className="lobby-title">🏠 Lobby</h2>
+          <WsStatus status={wsStatus} />
+        </div>
 
-          {/* Mode toggle */}
-          <div style={{ marginBottom:'1.25rem' }}>
-            <div className="section-label" style={{ marginBottom:8 }}>Game Mode</div>
-            <div className="mode-toggle">
-              <button className={`mode-btn${mode==='normal'?' active-normal':''}`}
-                onClick={() => isHost && onSetMode('normal')} disabled={!isHost}>
-                🎯 Normal
-              </button>
-              <button className={`mode-btn${mode==='special'?' active-special':''}`}
-                onClick={() => isHost && onSetMode('special')} disabled={!isHost}>
-                ✨ Special
+        {/* Two-column content grid */}
+        <div className="lobby-content">
+
+          {/* Left: Room code + Players */}
+          <div className="lobby-left">
+            <div className="lobby-code-box">
+              <div className="section-label" style={{ marginBottom: 6 }}>Share this code!</div>
+              <div className="room-code-display">{room.code}</div>
+              <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={doCopy}>
+                {copied ? '✓ Copied!' : '⎘ Copy Code'}
               </button>
             </div>
-            <div style={{ fontSize:11, color:'rgba(255,255,255,.3)', marginTop:6, fontWeight:700, textAlign:'center' }}>
-              {mode==='normal' ? '4 normal chits only — no specials' : '4 normal + 2 random special chits'}
-            </div>
-          </div>
 
-          {/* Game Setup — special mode only */}
-          {mode === 'special' && (
-            <div style={{ marginBottom:'1.25rem' }}>
-              <div className="section-label" style={{ marginBottom:8 }}>Hand Setup</div>
-              <div className="mode-toggle">
-                <button
-                  className={`mode-btn${settings.normalCount === 4 ? ' active-normal' : ''}`}
-                  onClick={() => isHost && setHandSetup(4, 2)} disabled={!isHost}
-                >
-                  Classic · 4+2
-                </button>
-                <button
-                  className={`mode-btn${settings.normalCount === 8 ? ' active-special' : ''}`}
-                  onClick={() => isHost && setHandSetup(8, 4)} disabled={!isHost}
-                >
-                  Extended · 8+4
-                </button>
-              </div>
-              <div style={{ fontSize:11, color:'rgba(255,255,255,.3)', marginTop:6, fontWeight:700, textAlign:'center' }}>
-                {settings.normalCount === 4 ? '4 normal + 2 special per player' : '8 normal + 4 special per player'}
-              </div>
-
-              <div className="section-label" style={{ marginTop:12, marginBottom:8 }}>Special Cards</div>
-              <div style={{ display:'flex', flexWrap:'wrap', gap:5 }}>
-                {SPECIALS.map(s => {
-                  const on = (settings.enabledSpecials ?? SPECIALS.map(x => x.type)).includes(s.type)
+            <div>
+              <div className="section-label">Players ({room.players.length}/5)</div>
+              <div className="lobby-players">
+                {room.players.map((p, i) => {
+                  const sc = SEAT_COLORS[i % SEAT_COLORS.length]
                   return (
-                    <button key={s.type}
-                      disabled={!isHost}
-                      onClick={() => {
-                        if (!isHost) return
-                        const cur  = settings.enabledSpecials ?? SPECIALS.map(x => x.type)
-                        const next = on ? cur.filter(t => t !== s.type) : [...cur, s.type]
-                        if (next.length > 0) setEnabledSpecials(next)
-                      }}
-                      style={{
-                        padding:'3px 9px', borderRadius:20, fontSize:11, fontWeight:800,
-                        border:`1px solid ${on ? 'rgba(255,255,255,.28)' : 'rgba(255,255,255,.09)'}`,
-                        background: on ? 'rgba(255,255,255,.11)' : 'rgba(0,0,0,.15)',
-                        color: on ? '#fff' : 'rgba(255,255,255,.28)',
-                        cursor: isHost ? 'pointer' : 'default',
-                        transition:'all .15s',
-                      }}
-                    >
-                      {s.emoji} {s.name}
-                    </button>
+                    <div key={p.id} className="lobby-player">
+                      <div className="avatar" style={{ background: `${sc}22`, color: sc, border: `1.5px solid ${sc}` }}>
+                        {initials(p.name)}
+                      </div>
+                      <span style={{ flex: 1, fontSize: 13, fontWeight: 900 }}>{p.name}</span>
+                      {p.id === me.id && (
+                        <span style={{ fontSize: 10, fontWeight: 900, color: sc, background: `${sc}22`, padding: '2px 8px', borderRadius: 10, border: `1px solid ${sc}44` }}>You</span>
+                      )}
+                      {room.hostId === p.id && (
+                        <span style={{ fontSize: 10, fontWeight: 900, color: '#FFD600', background: 'rgba(255,214,0,.1)', padding: '2px 8px', borderRadius: 10, border: '1px solid rgba(255,214,0,.3)', marginLeft: 4 }}>Host</span>
+                      )}
+                      <span className="online-dot" />
+                    </div>
                   )
                 })}
               </div>
-              {!isHost && (
-                <div style={{ fontSize:10, color:'rgba(255,255,255,.25)', marginTop:6, fontWeight:700 }}>
-                  Only the host can change settings
-                </div>
-              )}
             </div>
-          )}
+          </div>
 
-          {/* Players */}
-          <div className="section-label">Players ({room.players.length}/5)</div>
-          <div style={{ marginBottom:14, maxHeight:180, overflowY:'auto' }}>
-            {room.players.map((p, i) => {
-              const sc = SEAT_COLORS[i % SEAT_COLORS.length]
-              return (
-                <div key={p.id} className="lobby-player">
-                  <div className="avatar" style={{ background:`${sc}22`, color:sc, border:`1.5px solid ${sc}` }}>
-                    {initials(p.name)}
+          {/* Right: Mode + Hand Setup + Specials */}
+          <div className="lobby-right">
+            <div>
+              <div className="section-label" style={{ marginBottom: 8 }}>Game Mode</div>
+              <div className="mode-toggle">
+                <button className={`mode-btn${mode === 'normal' ? ' active-normal' : ''}`}
+                  onClick={() => isHost && onSetMode('normal')} disabled={!isHost}>
+                  🎯 Normal
+                </button>
+                <button className={`mode-btn${mode === 'special' ? ' active-special' : ''}`}
+                  onClick={() => isHost && onSetMode('special')} disabled={!isHost}>
+                  ✨ Special
+                </button>
+              </div>
+              <div className="mode-hint">
+                {mode === 'normal' ? '4 normal chits only — no specials' : '4 normal + 2 random special chits'}
+              </div>
+            </div>
+
+            {mode === 'special' && (
+              <>
+                <div>
+                  <div className="section-label" style={{ marginBottom: 8 }}>Hand Setup</div>
+                  <div className="mode-toggle">
+                    <button className={`mode-btn${settings.normalCount === 4 ? ' active-normal' : ''}`}
+                      onClick={() => isHost && setHandSetup(4, 2)} disabled={!isHost}>
+                      Classic · 4+2
+                    </button>
+                    <button className={`mode-btn${settings.normalCount === 8 ? ' active-special' : ''}`}
+                      onClick={() => isHost && setHandSetup(8, 4)} disabled={!isHost}>
+                      Extended · 8+4
+                    </button>
                   </div>
-                  <span style={{ flex:1, fontSize:13, fontWeight:900 }}>{p.name}</span>
-                  {p.id===me.id       && <span style={{ fontSize:10, fontWeight:900, color:sc, background:`${sc}22`, padding:'2px 8px', borderRadius:10, border:`1px solid ${sc}44` }}>You</span>}
-                  {room.hostId===p.id && <span style={{ fontSize:10, fontWeight:900, color:'#FFD600', background:'rgba(255,214,0,.1)', padding:'2px 8px', borderRadius:10, border:'1px solid rgba(255,214,0,.3)', marginLeft:4 }}>Host</span>}
-                  <span className="online-dot" />
+                  <div className="mode-hint">
+                    {settings.normalCount === 4 ? '4 normal + 2 special per player' : '8 normal + 4 special per player'}
+                  </div>
                 </div>
-              )
-            })}
-          </div>
 
-          <div className="btn-row">
-            <button className="btn btn-green btn-lg"
-              disabled={!isHost||room.players.length<2} onClick={onStart}>
-              ▶ Start Game
-            </button>
-            <button className="btn btn-ghost" onClick={onLeave}>Leave</button>
+                <div>
+                  <div className="lobby-specials-header">
+                    <div className="section-label" style={{ margin: 0 }}>
+                      Special Cards{!specsOpen && ` — ${enabledSpecials.length} enabled`}
+                    </div>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setSpecsOpen(o => !o)}>
+                      {specsOpen ? 'Hide ▲' : 'Edit ▼'}
+                    </button>
+                  </div>
+                  {specsOpen && (
+                    <div className="lobby-specials-grid fade-up">
+                      {SPECIALS.map(s => {
+                        const on = enabledSpecials.includes(s.type)
+                        return (
+                          <button key={s.type}
+                            disabled={!isHost}
+                            onClick={() => {
+                              if (!isHost) return
+                              const next = on ? enabledSpecials.filter(t => t !== s.type) : [...enabledSpecials, s.type]
+                              if (next.length > 0) setEnabledSpecials(next)
+                            }}
+                            className={`special-toggle-btn${on ? ' on' : ''}`}
+                          >
+                            {s.emoji} {s.name}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                  {!isHost && (
+                    <div className="mode-hint" style={{ marginTop: 4 }}>Only the host can change settings</div>
+                  )}
+                </div>
+              </>
+            )}
           </div>
-          {!isHost && <p style={{ fontSize:11, color:'rgba(255,255,255,.3)', marginTop:10, textAlign:'center', fontWeight:800 }}>⏳ Waiting for host…</p>}
-          {isHost && room.players.length<2 && <p style={{ fontSize:11, color:'rgba(255,255,255,.3)', marginTop:10, textAlign:'center', fontWeight:800 }}>Need at least 2 players.</p>}
         </div>
+
+        {/* Status hints */}
+        {(!isHost || room.players.length < 2) && (
+          <p className="lobby-wait-msg">
+            {!isHost ? '⏳ Waiting for host…' : 'Need at least 2 players to start.'}
+          </p>
+        )}
+
+        {/* Action bar — sticky on mobile, inline on desktop */}
+        <div className="lobby-actions">
+          <button className="btn btn-green btn-lg lobby-start-btn"
+            disabled={!isHost || room.players.length < 2} onClick={onStart}>
+            ▶ Start Game
+          </button>
+          <button className="btn btn-ghost" onClick={onLeave}>Leave</button>
+        </div>
+
       </div>
     </div>
   )

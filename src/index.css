@@ -362,3 +362,152 @@ button { cursor: pointer; font-family: 'Nunito', sans-serif; border: none; outli
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
   .hand-hud { padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
 }
+
+/* ── CARD FLIP ── */
+.hand-card {
+  perspective: 900px;
+}
+.hand-card-inner {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  transform-style: preserve-3d;
+  transition: transform 280ms ease;
+}
+.hand-card.is-revealed .hand-card-inner {
+  transform: rotateY(0deg);
+}
+.hand-card.is-hidden .hand-card-inner {
+  transform: rotateY(180deg);
+}
+.hand-card-face {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+.hand-card-back {
+  transform: rotateY(180deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .hand-card-inner { transition: none; }
+}
+
+/* ── LOBBY RESPONSIVE LAYOUT ── */
+.lobby-wrap {
+  position: fixed; inset: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 1rem;
+  background: rgba(0,0,0,.78);
+  backdrop-filter: blur(6px);
+  z-index: 30;
+}
+
+.lobby-panel {
+  width: 100%; max-width: 860px;
+  padding: 20px;
+  margin: auto;
+  flex-shrink: 0;
+}
+
+.lobby-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 1.25rem;
+}
+
+.lobby-title {
+  font-family: 'Fredoka One', cursive; font-size: 1.5rem; color: #fff; margin: 0;
+}
+
+.lobby-content {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+  margin-bottom: 14px;
+}
+
+.lobby-left  { display: flex; flex-direction: column; gap: 16px; }
+.lobby-right { display: flex; flex-direction: column; gap: 16px; }
+
+.lobby-code-box {
+  text-align: center; padding: 14px 16px; border-radius: 14px;
+  background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1);
+}
+
+.lobby-players {
+  max-height: 190px; overflow-y: auto; margin-top: 6px;
+}
+.lobby-players::-webkit-scrollbar { width: 3px; }
+.lobby-players::-webkit-scrollbar-thumb { background: rgba(255,255,255,.2); border-radius: 3px; }
+
+.lobby-specials-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.lobby-specials-grid { display: flex; flex-wrap: wrap; gap: 5px; }
+
+.special-toggle-btn {
+  padding: 3px 9px; border-radius: 20px;
+  font-size: 11px; font-weight: 800;
+  font-family: 'Nunito', sans-serif;
+  border: 1px solid rgba(255,255,255,.09);
+  background: rgba(0,0,0,.15);
+  color: rgba(255,255,255,.28);
+  cursor: pointer; transition: all .15s;
+}
+.special-toggle-btn.on {
+  border-color: rgba(255,255,255,.28);
+  background: rgba(255,255,255,.11);
+  color: #fff;
+}
+.special-toggle-btn:disabled { cursor: default; }
+
+.mode-hint {
+  font-size: 11px; color: rgba(255,255,255,.3);
+  margin-top: 6px; font-weight: 700; text-align: center;
+}
+
+.lobby-wait-msg {
+  font-size: 11px; color: rgba(255,255,255,.3);
+  margin-bottom: 10px; text-align: center; font-weight: 800;
+}
+
+.lobby-actions {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding-top: 14px; border-top: 1px solid rgba(255,255,255,.07);
+}
+
+/* Mobile: sticky action bar at bottom of panel */
+@media (max-width: 899px) {
+  .lobby-wrap {
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+  }
+  .lobby-actions {
+    position: sticky; bottom: 0;
+    margin: 14px -20px -20px;
+    padding: 12px 20px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    background: rgba(4,12,6,.97);
+    backdrop-filter: blur(16px);
+    border-top: 1px solid rgba(255,255,255,.12);
+    border-radius: 0 0 var(--radius) var(--radius);
+  }
+  .lobby-start-btn { flex: 1; }
+}
+
+/* Desktop two-column layout */
+@media (min-width: 900px) {
+  .lobby-wrap { padding: 1.5rem; }
+  .lobby-panel { padding: 28px; }
+  .lobby-content {
+    grid-template-columns: minmax(260px, 0.9fr) minmax(340px, 1.1fr);
+    align-items: start;
+    gap: 28px;
+  }
+  .lobby-players { max-height: 380px; }
+  .lobby-actions { margin-top: 4px; }
+}

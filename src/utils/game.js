@@ -1,4 +1,4 @@
-export const SYMBOLS = ["🍎","🍋","🍇","🍓","🔥","⭐","🎯","🍀"]
+export const SYMBOLS = ["🍎","🍋","🍇","🍓","🔥","⭐","🎯","🍀","💎","🌙"]
 
 export const SPECIALS = [
   { type: 'REVERSE',        emoji: '🔄', name: 'Reverse'        },

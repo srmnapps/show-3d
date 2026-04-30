@@ -32,6 +32,7 @@ export function useGame() {
   const resolveTimerRef   = useRef(null)
   const countdownTimer    = useRef(null)
   const nextPlayerIdxRef  = useRef(-1)
+  const autoRevealTimerRef = useRef([])
 
   const { connect, send, disconnect } = useWebSocket()
 
@@ -80,6 +81,14 @@ export function useGame() {
     if (r.currentTurn === myI) return true
     return !!(r.effects?.find(e => e.type === 'PUPPETEER' && e.ownerIdx === myI && e.targetIdx === r.currentTurn))
   }
+
+  // ── Auto-reveal all cards with CSS-driven stagger ────────
+  const revealAllMyCardsWithAnimation = useCallback(() => {
+    autoRevealTimerRef.current.forEach(clearTimeout)
+    autoRevealTimerRef.current = []
+    const count = roomRef.current?.players[myIdxRef.current]?.chits?.length ?? 0
+    updateMyRevealed(Array(count).fill(true))
+  }, [])
 
   // ── syncRevealed ─────────────────────────────────────────
   const syncRevealed = useCallback((prevCount) => {
@@ -358,8 +367,8 @@ export function useGame() {
   const revealChit = useCallback((i) => {
     if (isStunned || amIStunned) return
     if (!['playing','pendingSpecial','revealedSnatchPicking','nukePicking'].includes(roomRef.current?.phase)) return
-    const r = [...myRevealedRef.current]; r[i] = true; updateMyRevealed(r)
-  }, [isStunned, amIStunned])
+    if (!myRevealedRef.current[i]) revealAllMyCardsWithAnimation()
+  }, [isStunned, amIStunned, revealAllMyCardsWithAnimation])
 
   // ── Chit click ────────────────────────────────────────────
   const onChitClick = useCallback((i, forActingPlayer = false) => {
@@ -376,7 +385,7 @@ export function useGame() {
       return
     }
 
-    if (!forActingPlayer && !myRev[i]) { revealChit(i); return }
+    if (!forActingPlayer && !myRev[i]) { revealAllMyCardsWithAnimation(); return }
 
     // Allow anytime specials even outside own turn
     const isAnytime = isSpecial(chit) && SPECIAL_CONFIG[chit.type]?.timing === 'ANYTIME'
@@ -390,7 +399,7 @@ export function useGame() {
     if (r?.phase === 'playing' && (isMyTurn || mustPassNormal)) {
       setSelectedChit(prev => prev === i ? -1 : i)
     }
-  }, [isMyTurn, mustPassNormal, revealChit, amIStunned, isStunned])
+  }, [isMyTurn, mustPassNormal, revealAllMyCardsWithAnimation, amIStunned, isStunned])
 
   // ── Pass ─────────────────────────────────────────────────
   const passChit = useCallback((chitIdx, forActingPlayer = false) => {
@@ -548,7 +557,10 @@ export function useGame() {
   }, [sendAction])
 
   const leaveRoom = useCallback(() => {
-    clearCountdown(); disconnect()
+    clearCountdown()
+    autoRevealTimerRef.current.forEach(clearTimeout)
+    autoRevealTimerRef.current = []
+    disconnect()
     updateRoom(null); updateMyIdx(-1); setSelectedChit(-1)
     updateLogs([]); setErrorMsg(''); updateMyRevealed([])
     setSpecialAction(null); setMustPassNormal(false); setIsStunned(false); setStunFlash(false)
