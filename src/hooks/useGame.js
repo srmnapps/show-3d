@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from 'react'
 import { useWebSocket } from './useWebSocket.js'
-import { applyAction, makeRoom, makePlayer, isShowHand, isSpecial, SPECIAL_CONFIG } from '../utils/game.js'
+import { applyAction, makeRoom, makePlayer, isShowHand, isSpecial } from '../utils/game.js'
 import { uid, generateRoomCode } from '../utils/helpers.js'
 
 export function useGame() {
@@ -22,6 +22,13 @@ export function useGame() {
   const [vitalsResult,   setVitalsResult]  = useState(null)
 
   // specialAction drives all modals
+  // null
+  // { type:'USE_OR_PASS', chitIdx, special }
+  // { type:'PICK_TARGET', actionType, exclude:[] }  — generic target picker
+  // { type:'REVEALED_SNATCH_PICK', options:[{c,i}], targetIdx }
+  // { type:'NUKE_PICK_CARD', targetIdx, specials:[{c,i}] }
+  // { type:'VITALS_RESULT', data }
+  // { type:'SUPER_VITALS_RESULT', data }
   const [specialAction, setSpecialAction]  = useState(null)
 
   const roomRef           = useRef(null)
@@ -32,6 +39,7 @@ export function useGame() {
   const resolveTimerRef   = useRef(null)
   const countdownTimer    = useRef(null)
   const nextPlayerIdxRef  = useRef(-1)
+  const revealTimersRef   = useRef([])
 
   const { connect, send, disconnect } = useWebSocket()
 
@@ -45,41 +53,30 @@ export function useGame() {
   const isHost        = room?.hostId === me.id
   const myPlayer      = room?.players[myIdx]
   const myPuppetInfo  = room?.puppeteerInfo
-  const amIPuppeteer  = myPuppetInfo?.puppeteerIdx === myIdx && myPuppetInfo?.active === true
-  const amIPuppeted   = myPuppetInfo?.targetIdx === myIdx && myPuppetInfo?.active === true
+  // Am I the puppeteer controlling someone?
+  const amIPuppeteer  = myPuppetInfo?.puppeteerIdx === myIdx
+  // Am I being puppeteered?
+  const amIPuppeted   = myPuppetInfo?.targetIdx === myIdx
+  // The target I'm controlling (if puppeteering)
   const puppetTarget  = amIPuppeteer ? room?.players[myPuppetInfo.targetIdx] : null
+
+  // Effective "acting player" — if I'm puppeteering, I act as the target
   const actingIdx     = amIPuppeteer ? myPuppetInfo.targetIdx : myIdx
   const actingPlayer  = room?.players[actingIdx]
+
   const isMyTurn      = room?.currentTurn === myIdx || (amIPuppeteer && room?.currentTurn === myPuppetInfo.targetIdx)
   const turnPlayer    = room?.players[room?.currentTurn]
   const showAll       = ['afterShow','roundEnd','ended'].includes(room?.phase)
   const hasJoinedShow = room?.showClicks?.some(c => c.playerIdx === myIdx) ?? false
   const canJoinShow   = room?.phase === 'showWindow' && !hasJoinedShow
-  const requiredShowSets = room?.settings?.normalCount === 8 ? 2 : 1
   const canCallShow   = room?.phase === 'playing'
     && !mustPassNormal && !isStunned
-    && isShowHand(myPlayer?.chits ?? [], requiredShowSets)
+    && isShowHand(myPlayer?.chits ?? [])
   const amIStunned    = room?.stunnedPlayer === myIdx
 
+  // Next player (for puppeteer exclusion)
   const nextPlayerIdx = room ? ((room.currentTurn + room.direction + room.players.length) % room.players.length) : -1
   nextPlayerIdxRef.current = nextPlayerIdx
-
-  // ── isSpecialUsableNow ───────────────────────────────────
-  const isSpecialUsableNow = useCallback((special) => {
-    const cfg = SPECIAL_CONFIG[special?.type]
-    if (!cfg) return false
-    if (cfg.timing === 'ANYTIME') return true
-    return isMyTurn
-  }, [isMyTurn])
-
-  // ── isTurnNow (ref-based, safe inside callbacks) ─────────
-  const isTurnNow = () => {
-    const r = roomRef.current
-    const myI = myIdxRef.current
-    if (!r) return false
-    if (r.currentTurn === myI) return true
-    return !!(r.effects?.find(e => e.type === 'PUPPETEER' && e.ownerIdx === myI && e.targetIdx === r.currentTurn))
-  }
 
   // ── syncRevealed ─────────────────────────────────────────
   const syncRevealed = useCallback((prevCount) => {
@@ -114,22 +111,39 @@ export function useGame() {
     setIsStunned(true)
   }, [])
 
-  // ── Super Vitals alert (only fires for the player who activated Super Vitals) ──
-  const fireSuperVitalsAlert = useCallback((room, playerIdx) => {
-    if (room.superVitalsAlert?.ownerIdx !== myIdxRef.current) return
-    const p = room.players[playerIdx]
-    if (!p) return
-    setSpecialAction(prev => prev ?? {
-      type: 'SUPER_VITALS_RESULT',
-      data: [{ name: p.name, idx: playerIdx }],
-    })
-  }, [])
+  // ── Vitals computation (client-side) ─────────────────────
+  function computeVitals(players, myI) {
+    return players.map((p, i) => {
+      if (i === myI) return null
+      const normals = p.chits.filter(c => !isSpecial(c))
+      const total   = normals.length
+      if (total === 0) return { name: p.name, idx: i, level: 'unknown', desc: 'No normal chits' }
+      // Group by symbol
+      const counts = {}
+      normals.forEach(c => { counts[c.symbol] = (counts[c.symbol] || 0) + 1 })
+      const maxSame = Math.max(...Object.values(counts))
+      const pct = maxSame / total
+      const level = pct >= 1 ? 'SHOW!' : pct >= .75 ? 'danger' : pct >= .5 ? 'high' : pct >= .25 ? 'medium' : 'low'
+      const desc  = pct >= 1 ? 'All 4 match — can SHOW!' : pct >= .75 ? '3/4 match — very close!' : pct >= .5 ? '2/4 match — halfway there' : 'Unlikely to show soon'
+      return { name: p.name, idx: i, level, desc, maxSame, total }
+    }).filter(Boolean)
+  }
+
+  function computeSuperVitals(players, myI) {
+    return players.map((p, i) => {
+      if (i === myI) return null
+      const normals = p.chits.filter(c => !isSpecial(c))
+      if (normals.length < 4) return null
+      const counts = {}
+      normals.forEach(c => { counts[c.symbol] = (counts[c.symbol] || 0) + 1 })
+      const maxSame = Math.max(...Object.values(counts))
+      return maxSame >= 4 ? { name: p.name, idx: i } : null
+    }).filter(Boolean)
+  }
 
   // ── processAction (host) ──────────────────────────────────
   const processAction = useCallback((action) => {
-    const prevPhase      = roomRef.current?.phase
-    const prevAlertId    = roomRef.current?.superVitalsAlert?.id
-    const prevStunned    = roomRef.current?.stunnedPlayer
+    const prevPhase = roomRef.current?.phase
     const { room: r, logs: l } = applyAction(roomRef.current, logsRef.current, action)
     updateRoom(r); updateLogs(l)
 
@@ -159,28 +173,25 @@ export function useGame() {
     }
     if (np === 'playing' && prevPhase !== 'playing') setSpecialAction(null)
     if (action.type === 'STUN_GRENADE_PICK' && action.targetIdx === myI) triggerStunFlash()
-    if (prevStunned === myI && r.stunnedPlayer !== myI) setIsStunned(false)
 
+    // Show target pickers for host
     if (np === 'pendingSpecial') {
       const pa = r.pendingAction
       if (pa?.userIdx === myI) {
-        const excl = [pa.handOwnerIdx ?? myI]
-        const nextIdx = (r.currentTurn + r.direction + r.players.length) % r.players.length
-        if (pa.type === 'FREEZE')          setSpecialAction({ type:'PICK_TARGET', actionType:'FREEZE_PICK',                 exclude:excl })
-        if (pa.type === 'BLIND_SNATCH')    setSpecialAction({ type:'PICK_TARGET', actionType:'BLIND_SNATCH_PICK',           exclude:excl })
-        if (pa.type === 'REVEALED_SNATCH') setSpecialAction({ type:'PICK_TARGET', actionType:'REVEALED_SNATCH_PICK_TARGET', exclude:excl })
-        if (pa.type === 'STUN_GRENADE')    setSpecialAction({ type:'PICK_TARGET', actionType:'STUN_GRENADE_PICK',           exclude:excl })
-        if (pa.type === 'NUKE')            setSpecialAction({ type:'PICK_TARGET', actionType:'NUKE_PICK_TARGET',            exclude:excl })
-        if (pa.type === 'PUPPETEER')       setSpecialAction({ type:'PICK_TARGET', actionType:'PUPPETEER_PICK',              exclude:[...excl, nextIdx] })
-        if (pa.type === 'POSITION_SWAP')   setSpecialAction({ type:'PICK_TARGET', actionType:'POSITION_SWAP_PICK',         exclude:excl })
+        if (pa.type === 'BLIND_SNATCH')    setSpecialAction({ type:'PICK_TARGET', actionType:'BLIND_SNATCH_PICK',    exclude:[] })
+        if (pa.type === 'REVEALED_SNATCH') setSpecialAction({ type:'PICK_TARGET', actionType:'REVEALED_SNATCH_PICK_TARGET', exclude:[] })
+        if (pa.type === 'STUN_GRENADE')    setSpecialAction({ type:'PICK_TARGET', actionType:'STUN_GRENADE_PICK',    exclude:[] })
+        if (pa.type === 'NUKE')            setSpecialAction({ type:'PICK_TARGET', actionType:'NUKE_PICK_TARGET',     exclude:[] })
+        if (pa.type === 'PUPPETEER')       setSpecialAction({ type:'PICK_TARGET', actionType:'PUPPETEER_PICK',       exclude:[] })
+        if (pa.type === 'POSITION_SWAP')   setSpecialAction({ type:'PICK_TARGET', actionType:'POSITION_SWAP_PICK',  exclude:[] })
       }
     }
     if (np === 'blindSnatchPicking' && r.pendingAction?.userIdx === myI) {
-      setSpecialAction({ type:'BLIND_SNATCH_PICK_CARD', targetIdx: r.pendingAction.targetIdx, handOwnerIdx: r.pendingAction.handOwnerIdx ?? myI })
+      setSpecialAction({ type:'BLIND_SNATCH_PICK_CARD', targetIdx: r.pendingAction.targetIdx })
       setLoading(false)
     }
     if (np === 'revealedSnatchPicking' && r.pendingAction?.userIdx === myI) {
-      setSpecialAction({ type:'REVEALED_SNATCH_PICK', options: r.pendingAction.revealedOptions, targetIdx: r.pendingAction.targetIdx, handOwnerIdx: r.pendingAction.handOwnerIdx ?? myI })
+      setSpecialAction({ type:'REVEALED_SNATCH_PICK', options: r.pendingAction.revealedOptions, targetIdx: r.pendingAction.targetIdx })
       setLoading(false)
     }
     if (np === 'nukePicking' && r.pendingAction?.userIdx === myI) {
@@ -192,18 +203,14 @@ export function useGame() {
     if (np === 'playing' && prevPhase === 'lobby') {
       setTimeout(() => setLoading(false), 0)
     }
+    // Freeze: reset my revealed cards when I get frozen
     if (action.type === 'USE_FREEZE' && r.frozenPlayer === myI) {
       const count = r.players[myI]?.chits?.length ?? 0
       updateMyRevealed(Array(count).fill(false))
     }
 
-    // Super Vitals alert
-    if (r.superVitalsAlert?.id && r.superVitalsAlert.id !== prevAlertId) {
-      fireSuperVitalsAlert(r, r.superVitalsAlert.matchingPlayerIdx)
-    }
-
     send({ type:'STATE_SYNC', payload:r, logs:l })
-  }, [send, startCountdown, clearCountdown, triggerStunFlash, fireSuperVitalsAlert])
+  }, [send, startCountdown, clearCountdown, triggerStunFlash, nextPlayerIdx])
 
   const sendAction = useCallback((action) => {
     if (roomRef.current?.hostId === meRef.current?.id) processAction(action)
@@ -232,7 +239,6 @@ export function useGame() {
         const prevPhase   = roomRef.current?.phase
         const prevStunned = roomRef.current?.stunnedPlayer
         const prevFrozen  = roomRef.current?.frozenPlayer
-        const prevAlertId = roomRef.current?.superVitalsAlert?.id
         const prevCount   = roomRef.current?.players[myIdxRef.current]?.chits?.length ?? 0
         updateRoom(data.payload); updateLogs(data.logs ?? [])
         const idx = data.payload.players.findIndex(p => p.id === meRef.current.id)
@@ -253,26 +259,24 @@ export function useGame() {
         if (data.payload.stunnedPlayer === myI && prevStunned !== myI) triggerStunFlash()
         if (prevStunned === myI && data.payload.stunnedPlayer !== myI) setIsStunned(false)
 
+        // Non-host target pickers
         if (np === 'pendingSpecial') {
           const pa = data.payload.pendingAction
           if (pa?.userIdx === myI) {
-            const excl = [pa.handOwnerIdx ?? myI]
-            const nextIdx = (data.payload.currentTurn + data.payload.direction + data.payload.players.length) % data.payload.players.length
-            if (pa.type === 'FREEZE')          setSpecialAction({ type:'PICK_TARGET', actionType:'FREEZE_PICK',                 exclude:excl })
-            if (pa.type === 'BLIND_SNATCH')    setSpecialAction({ type:'PICK_TARGET', actionType:'BLIND_SNATCH_PICK',           exclude:excl })
-            if (pa.type === 'REVEALED_SNATCH') setSpecialAction({ type:'PICK_TARGET', actionType:'REVEALED_SNATCH_PICK_TARGET', exclude:excl })
-            if (pa.type === 'STUN_GRENADE')    setSpecialAction({ type:'PICK_TARGET', actionType:'STUN_GRENADE_PICK',           exclude:excl })
-            if (pa.type === 'NUKE')            setSpecialAction({ type:'PICK_TARGET', actionType:'NUKE_PICK_TARGET',            exclude:excl })
-            if (pa.type === 'PUPPETEER')       setSpecialAction({ type:'PICK_TARGET', actionType:'PUPPETEER_PICK',              exclude:[...excl, nextIdx] })
-            if (pa.type === 'POSITION_SWAP')   setSpecialAction({ type:'PICK_TARGET', actionType:'POSITION_SWAP_PICK',         exclude:excl })
+            if (pa.type === 'BLIND_SNATCH')    setSpecialAction({ type:'PICK_TARGET', actionType:'BLIND_SNATCH_PICK',    exclude:[] })
+            if (pa.type === 'REVEALED_SNATCH') setSpecialAction({ type:'PICK_TARGET', actionType:'REVEALED_SNATCH_PICK_TARGET', exclude:[] })
+            if (pa.type === 'STUN_GRENADE')    setSpecialAction({ type:'PICK_TARGET', actionType:'STUN_GRENADE_PICK',    exclude:[] })
+            if (pa.type === 'NUKE')            setSpecialAction({ type:'PICK_TARGET', actionType:'NUKE_PICK_TARGET',     exclude:[] })
+            if (pa.type === 'PUPPETEER')       setSpecialAction({ type:'PICK_TARGET', actionType:'PUPPETEER_PICK',       exclude:[] })
+            if (pa.type === 'POSITION_SWAP')   setSpecialAction({ type:'PICK_TARGET', actionType:'POSITION_SWAP_PICK',  exclude:[] })
           }
         }
         if (np === 'blindSnatchPicking' && data.payload.pendingAction?.userIdx === myI) {
-          setSpecialAction({ type:'BLIND_SNATCH_PICK_CARD', targetIdx: data.payload.pendingAction.targetIdx, handOwnerIdx: data.payload.pendingAction.handOwnerIdx ?? myI })
+          setSpecialAction({ type:'BLIND_SNATCH_PICK_CARD', targetIdx: data.payload.pendingAction.targetIdx })
           setLoading(false)
         }
         if (np === 'revealedSnatchPicking' && data.payload.pendingAction?.userIdx === myI) {
-          setSpecialAction({ type:'REVEALED_SNATCH_PICK', options: data.payload.pendingAction.revealedOptions, targetIdx: data.payload.pendingAction.targetIdx, handOwnerIdx: data.payload.pendingAction.handOwnerIdx ?? myI })
+          setSpecialAction({ type:'REVEALED_SNATCH_PICK', options: data.payload.pendingAction.revealedOptions, targetIdx: data.payload.pendingAction.targetIdx })
           setLoading(false)
         }
         if (np === 'nukePicking' && data.payload.pendingAction?.userIdx === myI) {
@@ -281,14 +285,10 @@ export function useGame() {
           setSpecialAction({ type:'NUKE_PICK_CARD', targetIdx:ti, specials })
           setLoading(false)
         }
+        // Freeze: reset my revealed cards when I get frozen
         if (data.payload.frozenPlayer === myI && prevFrozen !== myI) {
           const count = data.payload.players[myI]?.chits?.length ?? 0
           updateMyRevealed(Array(count).fill(false))
-        }
-
-        // Super Vitals alert
-        if (data.payload.superVitalsAlert?.id && data.payload.superVitalsAlert.id !== prevAlertId) {
-          fireSuperVitalsAlert(data.payload, data.payload.superVitalsAlert.matchingPlayerIdx)
         }
         break
       }
@@ -298,7 +298,7 @@ export function useGame() {
         break
       }
     }
-  }, [send, syncRevealed, startCountdown, clearCountdown, processAction, triggerStunFlash, fireSuperVitalsAlert])
+  }, [send, syncRevealed, startCountdown, clearCountdown, processAction, triggerStunFlash])
 
   // ── Room management ───────────────────────────────────────
   const createRoom = useCallback(async (name) => {
@@ -317,7 +317,7 @@ export function useGame() {
     setErrorMsg(''); setLoading(true)
     const newMe = { id:uid(), name }
     updateMe(newMe); meRef.current = newMe
-    updateRoom({ code, phase:'lobby', players:[], hostId:null, round:1, currentTurn:0, direction:1, showCaller:-1, showClicks:[], frozenPlayer:-1, stunnedPlayer:-1, puppeteerInfo:null, positionSwaps:[], pendingAction:null, mode:'special', effects:[], superVitalsAlert:null })
+    updateRoom({ code, phase:'lobby', players:[], hostId:null, round:1, currentTurn:0, direction:1, showCaller:-1, showClicks:[], frozenPlayer:-1, stunnedPlayer:-1, puppeteerInfo:null, positionSwaps:[], pendingAction:null, mode:'special' })
     updateLogs([])
     connect(code, onMessage, setWsStatus)
     await delay(600)
@@ -334,7 +334,6 @@ export function useGame() {
   // ── Mode ─────────────────────────────────────────────────
   const setMode = useCallback((mode) => sendAction({ type:'SET_MODE', mode }), [sendAction])
 
-  // ── Settings ──────────────────────────────────────────────
   const setHandSetup = useCallback((normalCount, specialCount) => {
     sendAction({ type:'SET_HAND_SETUP', normalCount, specialCount })
   }, [sendAction])
@@ -346,24 +345,41 @@ export function useGame() {
   // ── Start ────────────────────────────────────────────────
   const startGame = useCallback(() => {
     setLoading(true)
-    const s  = room?.settings
-    const nc = s?.normalCount ?? 4
-    const sc = room?.mode === 'normal' ? 0 : (s?.specialCount ?? 2)
-    updateMyRevealed(Array(nc + sc).fill(false))
+    const normalCount = room?.settings?.normalCount ?? 4
+    const specialCount = room?.mode === 'normal' ? 0 : (room?.settings?.specialCount ?? 2)
+    updateMyRevealed(Array(normalCount + specialCount).fill(false))
     setMustPassNormal(false); setSpecialAction(null); setIsStunned(false)
     sendAction({ type:'START' })
   }, [sendAction, room])
 
   // ── Reveal ───────────────────────────────────────────────
+  const revealAllMyCardsWithAnimation = useCallback(() => {
+    const count = roomRef.current?.players[myIdxRef.current]?.chits?.length ?? 0
+    if (!count) return
+
+    revealTimersRef.current.forEach(clearTimeout)
+    revealTimersRef.current = []
+
+    for (let i = 0; i < count; i++) {
+      const timer = setTimeout(() => {
+        const next = [...myRevealedRef.current]
+        next[i] = true
+        updateMyRevealed(next)
+      }, i * 80)
+
+      revealTimersRef.current.push(timer)
+    }
+  }, [])
+
   const revealChit = useCallback((i) => {
-    if (isStunned || amIStunned) return
     if (!['playing','pendingSpecial','revealedSnatchPicking','nukePicking'].includes(roomRef.current?.phase)) return
-    const r = [...myRevealedRef.current]; r[i] = true; updateMyRevealed(r)
-  }, [isStunned, amIStunned])
+    if (!myRevealedRef.current[i]) revealAllMyCardsWithAnimation()
+  }, [revealAllMyCardsWithAnimation])
 
   // ── Chit click ────────────────────────────────────────────
   const onChitClick = useCallback((i, forActingPlayer = false) => {
     const r     = roomRef.current
+    // forActingPlayer: true when puppeteer clicks target's chit
     const pidx  = forActingPlayer ? r?.puppeteerInfo?.targetIdx : myIdxRef.current
     const chits = r?.players[pidx]?.chits ?? []
     const chit  = chits[i]
@@ -372,31 +388,37 @@ export function useGame() {
     const myRev = forActingPlayer ? Array(chits.length).fill(true) : myRevealedRef.current
 
     if (!forActingPlayer && (amIStunned || isStunned)) {
-      if (r?.phase === 'playing' && isMyTurn) setSelectedChit(prev => prev === i ? -1 : i)
+      if (!myRev[i]) {
+        revealAllMyCardsWithAnimation()
+        return
+      }
+
+      if (r?.phase === 'playing' && isMyTurn) {
+        setSelectedChit(prev => prev === i ? -1 : i)
+      }
       return
     }
 
     if (!forActingPlayer && !myRev[i]) { revealChit(i); return }
 
-    // Allow anytime specials even outside own turn
-    const isAnytime = isSpecial(chit) && SPECIAL_CONFIG[chit.type]?.timing === 'ANYTIME'
-    const canActSpecial = forActingPlayer ? true : (isMyTurn || isAnytime)
-
-    if (isSpecial(chit) && canActSpecial && r?.phase === 'playing' && !mustPassNormal) {
+    // Special card tap
+    const canAct = forActingPlayer ? true : isMyTurn
+    if (isSpecial(chit) && canAct && r?.phase === 'playing' && !mustPassNormal) {
       setSpecialAction({ type:'USE_OR_PASS', chitIdx:i, special:chit, forActing:forActingPlayer })
       setSelectedChit(i)
       return
     }
-    if (r?.phase === 'playing' && (isMyTurn || mustPassNormal)) {
+    if (r?.phase === 'playing' && (canAct || mustPassNormal)) {
       setSelectedChit(prev => prev === i ? -1 : i)
     }
-  }, [isMyTurn, mustPassNormal, revealChit, amIStunned, isStunned])
+  }, [isMyTurn, mustPassNormal, revealChit, revealAllMyCardsWithAnimation, amIStunned, isStunned])
 
   // ── Pass ─────────────────────────────────────────────────
   const passChit = useCallback((chitIdx, forActingPlayer = false) => {
     if (chitIdx === -1) { setErrorMsg('Select a chit to pass!'); return }
-    const pidx    = forActingPlayer ? roomRef.current?.puppeteerInfo?.targetIdx : myIdxRef.current
-    const actorIdx = myIdxRef.current
+    const pidx = forActingPlayer
+      ? roomRef.current?.puppeteerInfo?.targetIdx
+      : myIdxRef.current
 
     if (!forActingPlayer) {
       const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
@@ -404,110 +426,107 @@ export function useGame() {
     setSelectedChit(-1); setErrorMsg(''); setSpecialAction(null)
     if (mustPassNormal) setMustPassNormal(false)
     if (amIStunned || isStunned) setIsStunned(false)
-    sendAction({ type:'PASS', actorIdx, handOwnerIdx: pidx, playerIdx: pidx, chitIdx })
+    sendAction({ type:'PASS', playerIdx:pidx, chitIdx })
   }, [sendAction, mustPassNormal, amIStunned, isStunned])
 
   // ── Use special ───────────────────────────────────────────
   const useSpecial = useCallback((chitIdx, special, forActing = false) => {
     setSelectedChit(-1)
-    if (!forActing) {
-      const rev = [...myRevealedRef.current]
-      rev.splice(chitIdx, 1)
-      updateMyRevealed(rev)
-    }
-    const pidx       = forActing ? roomRef.current?.puppeteerInfo?.targetIdx : myIdxRef.current
-    const actorIdx   = myIdxRef.current
-    const handOwnerIdx = pidx
-
-    const setMustPassIfTurn = () => { if (isTurnNow()) setMustPassNormal(true) }
-
-    const base = { actorIdx, handOwnerIdx, playerIdx: handOwnerIdx, chitIdx }
+    const pidx = forActing
+      ? roomRef.current?.puppeteerInfo?.targetIdx
+      : myIdxRef.current
 
     const actionMap = {
       REVERSE: () => {
-        sendAction({ type:'USE_REVERSE', ...base })
+        sendAction({ type:'USE_REVERSE', playerIdx:pidx, chitIdx })
         setMustPassNormal(true); setSpecialAction(null)
       },
       FREEZE: () => {
-        sendAction({ type:'USE_FREEZE', ...base })
-        setSpecialAction({ type:'PICK_TARGET', actionType:'FREEZE_PICK', exclude:[handOwnerIdx] })
+        sendAction({ type:'USE_FREEZE', playerIdx:pidx, chitIdx })
+        setMustPassNormal(true); setSpecialAction(null)
       },
+      // Multi-step specials: set PICK_TARGET immediately so the modal renders without
+      // waiting for processAction (host) or a STATE_SYNC round-trip (non-host).
       BLIND_SNATCH: () => {
-        sendAction({ type:'USE_BLIND_SNATCH', ...base })
-        setSpecialAction({ type:'PICK_TARGET', actionType:'BLIND_SNATCH_PICK', exclude:[handOwnerIdx] })
+        sendAction({ type:'USE_BLIND_SNATCH', playerIdx:pidx, chitIdx })
+        setSpecialAction({ type:'PICK_TARGET', actionType:'BLIND_SNATCH_PICK', exclude:[] })
       },
       REVEALED_SNATCH: () => {
-        sendAction({ type:'USE_REVEALED_SNATCH', ...base })
-        setSpecialAction({ type:'PICK_TARGET', actionType:'REVEALED_SNATCH_PICK_TARGET', exclude:[handOwnerIdx] })
+        sendAction({ type:'USE_REVEALED_SNATCH', playerIdx:pidx, chitIdx })
+        setSpecialAction({ type:'PICK_TARGET', actionType:'REVEALED_SNATCH_PICK_TARGET', exclude:[] })
       },
       STUN_GRENADE: () => {
-        sendAction({ type:'USE_STUN_GRENADE', ...base })
-        setSpecialAction({ type:'PICK_TARGET', actionType:'STUN_GRENADE_PICK', exclude:[handOwnerIdx] })
+        sendAction({ type:'USE_STUN_GRENADE', playerIdx:pidx, chitIdx })
+        setSpecialAction({ type:'PICK_TARGET', actionType:'STUN_GRENADE_PICK', exclude:[] })
       },
       NUKE: () => {
-        sendAction({ type:'USE_NUKE', ...base })
-        setSpecialAction({ type:'PICK_TARGET', actionType:'NUKE_PICK_TARGET', exclude:[handOwnerIdx] })
+        sendAction({ type:'USE_NUKE', playerIdx:pidx, chitIdx })
+        setSpecialAction({ type:'PICK_TARGET', actionType:'NUKE_PICK_TARGET', exclude:[] })
       },
       PUPPETEER: () => {
-        sendAction({ type:'USE_PUPPETEER', ...base })
-        setSpecialAction({ type:'PICK_TARGET', actionType:'PUPPETEER_PICK', exclude:[handOwnerIdx, nextPlayerIdxRef.current] })
+        sendAction({ type:'USE_PUPPETEER', playerIdx:pidx, chitIdx })
+        setSpecialAction({ type:'PICK_TARGET', actionType:'PUPPETEER_PICK', exclude:[] })
       },
       POSITION_SWAP: () => {
-        sendAction({ type:'USE_POSITION_SWAP', ...base })
-        setSpecialAction({ type:'PICK_TARGET', actionType:'POSITION_SWAP_PICK', exclude:[handOwnerIdx] })
+        sendAction({ type:'USE_POSITION_SWAP', playerIdx:pidx, chitIdx })
+        setSpecialAction({ type:'PICK_TARGET', actionType:'POSITION_SWAP_PICK', exclude:[] })
       },
       VITALS: () => {
         const r = roomRef.current
         const data = computeVitals(r.players, myIdxRef.current)
         setSpecialAction({ type:'VITALS_RESULT', data })
-        sendAction({ type:'USE_VITALS', ...base })
-        setMustPassIfTurn()
+        sendAction({ type:'USE_VITALS', playerIdx:pidx, chitIdx })
+        setMustPassNormal(true)
       },
       SUPER_VITALS: () => {
         const r = roomRef.current
-        const reqSets = r.settings?.normalCount === 8 ? 2 : 1
-        const data = computeSuperVitals(r.players, myIdxRef.current, reqSets)
+        const data = computeSuperVitals(r.players, myIdxRef.current)
         setSpecialAction({ type:'SUPER_VITALS_RESULT', data })
-        sendAction({ type:'USE_SUPER_VITALS', ...base })
-        setMustPassIfTurn()
+        sendAction({ type:'USE_SUPER_VITALS', playerIdx:pidx, chitIdx })
+        setMustPassNormal(true)
       },
     }
 
     actionMap[special.type]?.()
   }, [sendAction])
 
+  // For VITALS and SUPER_VITALS we need dedicated actions in game.js
+  // But since they're client-side, we consume the card locally via a dedicated action
+  const consumeVitals = useCallback((chitIdx, type) => {
+    sendAction({ type: type === 'VITALS' ? 'USE_VITALS' : 'USE_SUPER_VITALS', playerIdx: myIdxRef.current, chitIdx })
+    setMustPassNormal(true)
+  }, [sendAction])
+
   // ── Generic target pick result ────────────────────────────
   const pickTarget = useCallback((targetIdx, actionType) => {
     setSpecialAction(null)
-
     const actionMap = {
       'BLIND_SNATCH_PICK':           () => { setLoading(true); sendAction({ type:'BLIND_SNATCH_PICK',          targetIdx }) },
       'REVEALED_SNATCH_PICK_TARGET': () => { setLoading(true); sendAction({ type:'REVEALED_SNATCH_PICK_TARGET',targetIdx }) },
-      'FREEZE_PICK':                 () => { sendAction({ type:'FREEZE_PICK',            targetIdx }); if (isTurnNow()) setMustPassNormal(true) },
-      'STUN_GRENADE_PICK':           () => { sendAction({ type:'STUN_GRENADE_PICK',      targetIdx }); if (isTurnNow()) setMustPassNormal(true) },
-      'NUKE_PICK_TARGET':            () => { setLoading(true); sendAction({ type:'NUKE_PICK_TARGET', targetIdx }) },
-      'PUPPETEER_PICK':              () => sendAction({ type:'PUPPETEER_PICK',            targetIdx }),
-      'POSITION_SWAP_PICK':          () => { sendAction({ type:'POSITION_SWAP_PICK',     targetIdx }); setMustPassNormal(true) },
+      'STUN_GRENADE_PICK':           () => { sendAction({ type:'STUN_GRENADE_PICK',          targetIdx }); setMustPassNormal(true) },
+      'NUKE_PICK_TARGET':            () => { setLoading(true); sendAction({ type:'NUKE_PICK_TARGET',            targetIdx }) },
+      'PUPPETEER_PICK':              () => sendAction({ type:'PUPPETEER_PICK',               targetIdx }),
+      'POSITION_SWAP_PICK':          () => { sendAction({ type:'POSITION_SWAP_PICK',         targetIdx }); setMustPassNormal(true) },
     }
     actionMap[actionType]?.()
   }, [sendAction])
 
-  const blindSnatchPickCard = useCallback((targetCardIdx, ownCardIdx) => {
+  const blindSnatchPickCard = useCallback((chitIdx) => {
     setSpecialAction(null)
-    sendAction({ type:'BLIND_SNATCH_PICK_CARD', targetCardIdx, ownCardIdx })
+    sendAction({ type:'BLIND_SNATCH_PICK_CARD', chitIdx })
     setMustPassNormal(true)
   }, [sendAction])
 
-  const revealedSnatchPick = useCallback((targetCardIdx, ownCardIdx) => {
+  const revealedSnatchPick = useCallback((chitIdx) => {
     setSpecialAction(null)
-    sendAction({ type:'REVEALED_SNATCH_PICK_CHIT', targetCardIdx, ownCardIdx })
+    sendAction({ type:'REVEALED_SNATCH_PICK_CHIT', chitIdx })
     setMustPassNormal(true)
   }, [sendAction])
 
   const nukePickCard = useCallback((chitIdx) => {
     setSpecialAction(null)
     sendAction({ type:'NUKE_PICK_CARD', chitIdx })
-    if (isTurnNow()) setMustPassNormal(true)
+    setMustPassNormal(true)
   }, [sendAction])
 
   const cancelSpecial = useCallback(() => {
@@ -515,11 +534,6 @@ export function useGame() {
   }, [])
 
   const dismissVitals = useCallback(() => setSpecialAction(null), [])
-
-  const consumeVitals = useCallback((chitIdx, type) => {
-    sendAction({ type: type === 'VITALS' ? 'USE_VITALS' : 'USE_SUPER_VITALS', playerIdx: myIdxRef.current, chitIdx })
-    setMustPassNormal(true)
-  }, [sendAction])
 
   const callShow = useCallback(() => {
     if (!canCallShow) { setErrorMsg("Your 4 normals don't all match!"); return }
@@ -532,11 +546,10 @@ export function useGame() {
   }, [canJoinShow, sendAction])
 
   const nextRound = useCallback(() => {
-    const r  = roomRef.current
-    const s  = r?.settings
-    const nc = s?.normalCount ?? 4
-    const sc = r?.mode === 'normal' ? 0 : (s?.specialCount ?? 2)
-    updateMyRevealed(Array(nc + sc).fill(false))
+    const currentRoom = roomRef.current
+    const normalCount = currentRoom?.settings?.normalCount ?? 4
+    const specialCount = currentRoom?.mode === 'normal' ? 0 : (currentRoom?.settings?.specialCount ?? 2)
+    updateMyRevealed(Array(normalCount + specialCount).fill(false))
     setMustPassNormal(false); setSpecialAction(null); setIsStunned(false)
     sendAction({ type:'NEXT_ROUND' })
   }, [sendAction])
@@ -548,6 +561,8 @@ export function useGame() {
   }, [sendAction])
 
   const leaveRoom = useCallback(() => {
+    revealTimersRef.current.forEach(clearTimeout)
+    revealTimersRef.current = []
     clearCountdown(); disconnect()
     updateRoom(null); updateMyIdx(-1); setSelectedChit(-1)
     updateLogs([]); setErrorMsg(''); updateMyRevealed([])
@@ -561,7 +576,6 @@ export function useGame() {
     myRevealed, countdown, canJoinShow, hasJoinedShow, canCallShow,
     specialAction, mustPassNormal, stunFlash, isStunned, amIStunned,
     amIPuppeteer, amIPuppeted, puppetTarget, actingIdx, actingPlayer,
-    isSpecialUsableNow,
     createRoom, joinRoom, startGame, setMode, setHandSetup, setEnabledSpecials,
     revealChit, onChitClick, passChit, useSpecial, cancelSpecial,
     pickTarget, blindSnatchPickCard, revealedSnatchPick, nukePickCard, dismissVitals, consumeVitals,
@@ -570,7 +584,7 @@ export function useGame() {
   }
 }
 
-// ── Vitals helpers ─────────────────────────────────────────────
+// ── Vitals helpers (standalone so processAction can import if needed) ──
 function computeVitals(players, myI) {
   return players.map((p, i) => {
     if (i === myI) return null
@@ -586,10 +600,15 @@ function computeVitals(players, myI) {
   }).filter(Boolean)
 }
 
-function computeSuperVitals(players, myI, requiredSets = 1) {
+function computeSuperVitals(players, myI) {
   return players.map((p, i) => {
     if (i === myI) return null
-    return isShowHand(p.chits, requiredSets) ? { name:p.name, idx:i } : null
+    const normals = p.chits.filter(c => !isSpecial(c))
+    if (normals.length < 4) return null
+    const counts = {}
+    normals.forEach(c => { counts[c.symbol] = (counts[c.symbol] || 0) + 1 })
+    const maxSame = Math.max(...Object.values(counts))
+    return maxSame >= 4 ? { name:p.name, idx:i } : null
   }).filter(Boolean)
 }
 
