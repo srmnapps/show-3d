@@ -35,7 +35,7 @@ export function WsStatus({ status }) {
 }
 
 // ── Hand card (fan arc layout) ────────────────────────────────
-export function HandCard({ chit, revealed, selected, onClick, arcIndex, totalCards, stunned, frozen, isPuppetTarget }) {
+export function HandCard({ chit, revealed, selected, onClick, arcIndex, totalCards, stunned, frozen, isPuppetTarget, isLargeHand }) {
   const special = isSpecial(chit)
   const display = chitDisplay(chit)
   const isBlind = (stunned || frozen) && !isPuppetTarget
@@ -44,7 +44,19 @@ export function HandCard({ chit, revealed, selected, onClick, arcIndex, totalCar
   const angle = (arcIndex - mid) * 5
   const lift  = Math.abs(arcIndex - mid) * 3
 
-  const style = {
+  const style = isLargeHand ? {
+    width: 46, height: 64, borderRadius: 8,
+    position: 'relative', flexShrink: 0,
+    cursor: 'pointer', userSelect: 'none',
+    transform: selected ? 'translateY(-10px) scale(1.08)' : 'none',
+    transition: 'transform .18s, box-shadow .18s',
+    boxShadow: selected
+      ? '0 0 0 3px #FFD600, 0 8px 20px rgba(0,0,0,.6)'
+      : special && revealed
+      ? '0 0 10px rgba(170,0,255,.4), 0 3px 8px rgba(0,0,0,.5)'
+      : '0 3px 10px rgba(0,0,0,.55)',
+    zIndex: selected ? 10 : 1,
+  } : {
     width: 58, height: 82, borderRadius: 10,
     position: 'relative', flexShrink: 0,
     cursor: 'pointer', userSelect: 'none',
@@ -62,7 +74,7 @@ export function HandCard({ chit, revealed, selected, onClick, arcIndex, totalCar
   }
 
   const faceStyle = {
-    position: 'absolute', inset: 0, borderRadius: 9,
+    position: 'absolute', inset: 0, borderRadius: isLargeHand ? 7 : 9,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     flexDirection: 'column', gap: 3,
     border: `2px solid ${selected ? 'rgba(255,214,0,.6)' : special && revealed ? 'rgba(170,0,255,.5)' : 'rgba(255,255,255,.15)'}`,
@@ -84,13 +96,13 @@ export function HandCard({ chit, revealed, selected, onClick, arcIndex, totalCar
               backgroundImage:'radial-gradient(circle,rgba(255,255,255,.15) 1.5px,transparent 1.5px)',
               backgroundSize:'8px 8px',
             }}/>
-            <span style={{ fontSize:22, fontFamily:"'Fredoka One',cursive", color:'rgba(255,255,255,.5)', position:'relative' }}>
+            <span style={{ fontSize: isLargeHand ? 16 : 22, fontFamily:"'Fredoka One',cursive", color:'rgba(255,255,255,.5)', position:'relative' }}>
               {stunned ? '💥' : frozen ? '🧊' : '?'}
             </span>
           </>
         ) : (
           <>
-            <span style={{ fontSize:28, lineHeight:1 }}>{display}</span>
+            <span style={{ fontSize: isLargeHand ? 20 : 28, lineHeight:1 }}>{display}</span>
             {special && (
               <span style={{ fontSize:7, fontWeight:900, color:'rgba(255,255,255,.8)', textTransform:'uppercase', letterSpacing:.4 }}>
                 {chit.name}
@@ -179,8 +191,9 @@ export function HandHud({
   onChitClick, onPass, onCallShow,
 }) {
   if (!myPlayer) return null
-  const chits   = myPlayer.chits ?? []
-  const blocked = !!specialAction || amIPuppeteer
+  const chits       = myPlayer.chits ?? []
+  const blocked     = !!specialAction || amIPuppeteer
+  const isLargeHand = chits.length > 8
 
   let hint = ''
   if (amIPuppeteer)                         hint = '🎭 You are puppeteering — use the control panel'
@@ -201,7 +214,7 @@ export function HandHud({
           🎭 Puppeteering — see control panel above
         </div>
       )}
-      <div className="hand-cards">
+      <div className={`hand-cards${isLargeHand ? ' hand-cards--large' : ''}`}>
         {chits.map((c, i) => (
           <HandCard key={i} chit={c}
             revealed={myRevealed[i]||false}
@@ -209,6 +222,7 @@ export function HandHud({
             stunned={amIStunned}
             frozen={myPlayer.frozen}
             arcIndex={i} totalCards={chits.length}
+            isLargeHand={isLargeHand}
             onClick={() => !blocked && onChitClick(i)}
           />
         ))}
@@ -302,6 +316,82 @@ export function RoundEndControls({ isHost, onNextRound, onEndGame }) {
           ⏳ Waiting for host…
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Round Result Modal ────────────────────────────────────────
+export function RoundResultModal({ room }) {
+  if (!room?.roundResults?.length) return null
+  return (
+    <div style={{
+      position:'fixed', inset:0, zIndex:35,
+      display:'flex', alignItems:'center', justifyContent:'center',
+      padding:'1rem',
+      background:'rgba(0,0,0,.76)', backdropFilter:'blur(8px)',
+      overflowY:'auto',
+    }}>
+      <div style={{
+        width:'100%', maxWidth:460,
+        background:'rgba(4,12,6,.97)',
+        border:'1.5px solid rgba(255,255,255,.12)',
+        borderRadius:18, padding:'20px 18px',
+        boxShadow:'0 12px 48px rgba(0,0,0,.8)',
+        maxHeight:'78vh', overflowY:'auto',
+      }}>
+        <div style={{ textAlign:'center', marginBottom:16 }}>
+          <div style={{ fontFamily:"'Fredoka One',cursive", fontSize:'1.5rem', color:'#fff', marginBottom:4 }}>
+            Round Results
+          </div>
+          <div style={{ fontSize:10, color:'rgba(255,255,255,.4)', fontWeight:800, letterSpacing:1, textTransform:'uppercase' }}>
+            All hands revealed
+          </div>
+        </div>
+
+        {room.roundResults.map(result => {
+          const color = SEAT_COLORS[result.playerIdx % SEAT_COLORS.length]
+          return (
+            <div key={result.playerIdx} style={{
+              marginBottom:10, padding:'12px 14px', borderRadius:12,
+              background: result.isShow ? 'rgba(255,214,0,.08)' : 'rgba(255,255,255,.04)',
+              border:`1px solid ${result.isShow ? 'rgba(255,214,0,.35)' : 'rgba(255,255,255,.08)'}`,
+            }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
+                <div className="avatar" style={{
+                  background:`${color}22`, color, border:`1.5px solid ${color}`,
+                  width:26, height:26, fontSize:10,
+                }}>
+                  {initials(result.name)}
+                </div>
+                <span style={{ flex:1, fontWeight:900, fontSize:13, color:'#fff' }}>{result.name}</span>
+                {result.isShow && <span style={{ fontSize:11, color:'#FFD600', fontWeight:900 }}>🔥 SHOW!</span>}
+                {result.roundPoints > 0 && (
+                  <span style={{ fontFamily:"'Fredoka One',cursive", fontSize:16, color:'#FFD600' }}>
+                    +{result.roundPoints}
+                  </span>
+                )}
+              </div>
+              <div style={{ display:'flex', flexWrap:'wrap', gap:5 }}>
+                {result.chits.map((chit, ci) => {
+                  const sp = isSpecial(chit)
+                  return (
+                    <div key={ci} style={{
+                      width:40, height:56, borderRadius:7,
+                      display:'flex', alignItems:'center', justifyContent:'center',
+                      flexDirection:'column', gap:2,
+                      background: sp ? 'linear-gradient(135deg,#6a0dad,#9c27b0)' : '#fff',
+                      border: sp ? '1.5px solid rgba(170,0,255,.5)' : '1.5px solid rgba(200,200,200,.35)',
+                    }}>
+                      <span style={{ fontSize:17, lineHeight:1 }}>{chitDisplay(chit)}</span>
+                      {sp && <span style={{ fontSize:5.5, fontWeight:900, color:'rgba(255,255,255,.8)', textTransform:'uppercase' }}>{chit.name}</span>}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

@@ -3,7 +3,7 @@ import { useGame } from './hooks/useGame.js'
 import {
   WsStatus, HandHud, PlayerSeat, GameLog,
   StatusPill, ShowWindowOverlay, RoundEndControls, EndScreen,
-  LoadingOverlay,
+  LoadingOverlay, RoundResultModal,
 } from './components/UI.jsx'
 import { SpecialModalManager } from './components/SpecialModals.jsx'
 import { LandingPage, CreateJoinScreen, JoinScreen, LobbyScreen } from './components/Screens.jsx'
@@ -25,7 +25,7 @@ export default function App() {
     myRevealed, countdown, canJoinShow, hasJoinedShow, canCallShow,
     specialAction, mustPassNormal, stunFlash, isStunned, amIStunned,
     amIPuppeteer, amIPuppeted, puppetTarget,
-    createRoom, joinRoom, startGame, setMode,
+    createRoom, joinRoom, startGame, setMode, setHandSetup, setEnabledSpecials,
     revealChit, onChitClick, passChit, useSpecial, cancelSpecial,
     pickTarget, revealedSnatchPick, nukePickCard, dismissVitals, blindSnatchPickCard,
     callShow, joinShow,
@@ -122,6 +122,7 @@ export default function App() {
           <LobbyScreen
             room={room} me={me} isHost={isHost} wsStatus={wsStatus}
             onStart={startGame} onLeave={onLeave} onSetMode={setMode}
+            setHandSetup={setHandSetup} setEnabledSpecials={setEnabledSpecials}
           />
         )}
 
@@ -187,6 +188,11 @@ export default function App() {
                 countdown={countdown} canJoinShow={canJoinShow}
                 hasJoinedShow={hasJoinedShow} onJoinShow={joinShow}
               />
+            )}
+
+            {/* Round results */}
+            {(phase==='afterShow' || phase==='roundEnd') && room.roundResults && (
+              <RoundResultModal room={room} />
             )}
 
             {/* Round end */}

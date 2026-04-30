@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { WsStatus } from './UI.jsx'
-import { AVATAR_COLORS, SEAT_COLORS } from '../utils/game.js'
+import { AVATAR_COLORS, SEAT_COLORS, SPECIALS } from '../utils/game.js'
 import { initials, copyToClipboard } from '../utils/helpers.js'
 
 // ── Landing Page ──────────────────────────────────────────────
@@ -221,13 +221,14 @@ export function JoinScreen({ name, onJoin, onBack, errorMsg }) {
 }
 
 // ── Lobby Screen ──────────────────────────────────────────────
-export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSetMode }) {
+export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSetMode, setHandSetup, setEnabledSpecials }) {
   const [copied, setCopied] = useState(false)
   async function doCopy() {
     await copyToClipboard(room.code)
     setCopied(true); setTimeout(() => setCopied(false), 1600)
   }
-  const mode = room.mode ?? 'special'
+  const mode     = room.mode ?? 'special'
+  const settings = room.settings ?? { normalCount: 4, specialCount: 2, enabledSpecials: SPECIALS.map(s => s.type) }
 
   return (
     <div className="overlay">
@@ -264,6 +265,63 @@ export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSe
               {mode==='normal' ? '4 normal chits only — no specials' : '4 normal + 2 random special chits'}
             </div>
           </div>
+
+          {/* Game Setup — special mode only */}
+          {mode === 'special' && (
+            <div style={{ marginBottom:'1.25rem' }}>
+              <div className="section-label" style={{ marginBottom:8 }}>Hand Setup</div>
+              <div className="mode-toggle">
+                <button
+                  className={`mode-btn${settings.normalCount === 4 ? ' active-normal' : ''}`}
+                  onClick={() => isHost && setHandSetup(4, 2)} disabled={!isHost}
+                >
+                  Classic · 4+2
+                </button>
+                <button
+                  className={`mode-btn${settings.normalCount === 8 ? ' active-special' : ''}`}
+                  onClick={() => isHost && setHandSetup(8, 4)} disabled={!isHost}
+                >
+                  Extended · 8+4
+                </button>
+              </div>
+              <div style={{ fontSize:11, color:'rgba(255,255,255,.3)', marginTop:6, fontWeight:700, textAlign:'center' }}>
+                {settings.normalCount === 4 ? '4 normal + 2 special per player' : '8 normal + 4 special per player'}
+              </div>
+
+              <div className="section-label" style={{ marginTop:12, marginBottom:8 }}>Special Cards</div>
+              <div style={{ display:'flex', flexWrap:'wrap', gap:5 }}>
+                {SPECIALS.map(s => {
+                  const on = (settings.enabledSpecials ?? SPECIALS.map(x => x.type)).includes(s.type)
+                  return (
+                    <button key={s.type}
+                      disabled={!isHost}
+                      onClick={() => {
+                        if (!isHost) return
+                        const cur  = settings.enabledSpecials ?? SPECIALS.map(x => x.type)
+                        const next = on ? cur.filter(t => t !== s.type) : [...cur, s.type]
+                        if (next.length > 0) setEnabledSpecials(next)
+                      }}
+                      style={{
+                        padding:'3px 9px', borderRadius:20, fontSize:11, fontWeight:800,
+                        border:`1px solid ${on ? 'rgba(255,255,255,.28)' : 'rgba(255,255,255,.09)'}`,
+                        background: on ? 'rgba(255,255,255,.11)' : 'rgba(0,0,0,.15)',
+                        color: on ? '#fff' : 'rgba(255,255,255,.28)',
+                        cursor: isHost ? 'pointer' : 'default',
+                        transition:'all .15s',
+                      }}
+                    >
+                      {s.emoji} {s.name}
+                    </button>
+                  )
+                })}
+              </div>
+              {!isHost && (
+                <div style={{ fontSize:10, color:'rgba(255,255,255,.25)', marginTop:6, fontWeight:700 }}>
+                  Only the host can change settings
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Players */}
           <div className="section-label">Players ({room.players.length}/5)</div>

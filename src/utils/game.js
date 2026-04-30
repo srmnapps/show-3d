@@ -48,11 +48,13 @@ export function makeSpecialChit(type) {
   const def = SPECIALS.find(s => s.type === type) ?? SPECIALS[0]
   return { type, emoji: def.emoji, name: def.name, special: true }
 }
-export function isShowHand(chits = []) {
+export function isShowHand(chits = [], requiredSets = 1) {
   const normals = chits.filter(c => !isSpecial(c))
-  if (normals.length !== 4) return false
-  const sym = normals[0]?.symbol
-  return normals.every(c => c.symbol === sym)
+  if (normals.length < 4) return false
+  const counts = {}
+  normals.forEach(c => { counts[c.symbol] = (counts[c.symbol] || 0) + 1 })
+  const sets = Object.values(counts).reduce((acc, v) => acc + Math.floor(v / 4), 0)
+  return sets >= requiredSets
 }
 export function chitDisplay(chit) {
   if (!chit) return '?'
@@ -70,37 +72,41 @@ function shuffle(arr) {
   return a
 }
 
-export function buildNormalDeck(playerCount) {
+export function buildNormalDeck(playerCount, normalCount = 4) {
+  const totalNeeded = playerCount * normalCount
   const deck = []
-  SYMBOLS.slice(0, playerCount).forEach(s => {
-    for (let i = 0; i < 4; i++) deck.push(makeNormalChit(s))
-  })
+  let symbolIdx = 0
+  while (deck.length < totalNeeded) {
+    const symbol = SYMBOLS[symbolIdx % SYMBOLS.length]
+    for (let i = 0; i < 4 && deck.length < totalNeeded; i++) {
+      deck.push(makeNormalChit(symbol))
+    }
+    symbolIdx++
+  }
   return shuffle(deck)
 }
 
-export function buildSpecialPool(playerCount) {
+export function buildSpecialPool(playerCount, specialCount = 2, enabledSpecialTypes = SPECIALS.map(s => s.type)) {
+  const allowed = enabledSpecialTypes.length ? enabledSpecialTypes : SPECIALS.map(s => s.type)
   const pool = []
-  for (let i = 0; i < playerCount * 2; i++) {
-    const type = SPECIALS[Math.floor(Math.random() * SPECIALS.length)].type
+  for (let i = 0; i < playerCount * specialCount; i++) {
+    const type = allowed[Math.floor(Math.random() * allowed.length)]
     pool.push(makeSpecialChit(type))
   }
   return shuffle(pool)
 }
 
-export function dealHands(playerCount, mode = 'special') {
-  const normalDeck = buildNormalDeck(playerCount)
-  if (mode === 'normal') {
-    return Array.from({ length: playerCount }, () => [
-      normalDeck.pop(), normalDeck.pop(),
-      normalDeck.pop(), normalDeck.pop(),
-    ])
-  }
-  const specialPool = buildSpecialPool(playerCount)
-  return Array.from({ length: playerCount }, () => [
-    normalDeck.pop(), normalDeck.pop(),
-    normalDeck.pop(), normalDeck.pop(),
-    specialPool.pop(), specialPool.pop(),
-  ])
+export function dealHands(playerCount, mode = 'special', settings = {}) {
+  const normalCount = settings.normalCount ?? 4
+  const specialCount = mode === 'normal' ? 0 : (settings.specialCount ?? 2)
+  const normalDeck = buildNormalDeck(playerCount, normalCount)
+  const specialPool = buildSpecialPool(playerCount, specialCount, settings.enabledSpecials)
+  return Array.from({ length: playerCount }, () => {
+    const hand = []
+    for (let i = 0; i < normalCount; i++) hand.push(normalDeck.pop())
+    for (let i = 0; i < specialCount; i++) hand.push(specialPool.pop())
+    return hand
+  })
 }
 
 // ── Factories ─────────────────────────────────────────────────
@@ -128,6 +134,11 @@ export function makeRoom(code, host) {
     superVitalsUsed: false,
     effects: [],
     superVitalsAlert: null,
+    settings: {
+      normalCount: 4,
+      specialCount: 2,
+      enabledSpecials: SPECIALS.map(s => s.type),
+    },
   }
 }
 
@@ -192,52 +203,68 @@ function validateSpecialUse(room, action, specialType, actorIdx, handOwnerIdx) {
   return true
 }
 
-function swapPlayerIndexes(room, a, b) {
-  const tmp = room.players[a]
+function remapIdx(idx, a, b) {
+  if (idx === a) return b
+  if (idx === b) return a
+  return idx
+}
+
+function swapPlayerObjectsAndRefs(room, a, b) {
+  if (a === b || a < 0 || b < 0) return
+  if (!room.players[a] || !room.players[b]) return
+
+  const temp = room.players[a]
   room.players[a] = room.players[b]
-  room.players[b] = tmp
-  const remap = i => (i === a ? b : i === b ? a : i)
-  room.currentTurn   = remap(room.currentTurn)
-  if (room.frozenPlayer  >= 0) room.frozenPlayer  = remap(room.frozenPlayer)
-  if (room.stunnedPlayer >= 0) room.stunnedPlayer = remap(room.stunnedPlayer)
-  room.effects = (room.effects ?? []).map(e => ({
-    ...e,
-    ownerIdx:  remap(e.ownerIdx),
-    targetIdx: remap(e.targetIdx),
-  }))
+  room.players[b] = temp
+
+  room.currentTurn  = remapIdx(room.currentTurn,  a, b)
+  room.frozenPlayer = remapIdx(room.frozenPlayer,  a, b)
+  room.stunnedPlayer = remapIdx(room.stunnedPlayer, a, b)
+  room.showCaller   = remapIdx(room.showCaller,    a, b)
+
+  if (Array.isArray(room.showClicks)) {
+    room.showClicks = room.showClicks.map(c => ({ ...c, playerIdx: remapIdx(c.playerIdx, a, b) }))
+  }
+
   if (room.puppeteerInfo) {
-    room.puppeteerInfo = {
-      puppeteerIdx: remap(room.puppeteerInfo.puppeteerIdx),
-      targetIdx:    remap(room.puppeteerInfo.targetIdx),
-    }
+    room.puppeteerInfo.puppeteerIdx = remapIdx(room.puppeteerInfo.puppeteerIdx, a, b)
+    room.puppeteerInfo.targetIdx    = remapIdx(room.puppeteerInfo.targetIdx,    a, b)
   }
+
   if (room.pendingAction) {
-    const pa = room.pendingAction
-    if (pa.userIdx      != null) pa.userIdx      = remap(pa.userIdx)
-    if (pa.targetIdx    != null) pa.targetIdx    = remap(pa.targetIdx)
-    if (pa.handOwnerIdx != null) pa.handOwnerIdx = remap(pa.handOwnerIdx)
+    if (typeof room.pendingAction.userIdx      === 'number') room.pendingAction.userIdx      = remapIdx(room.pendingAction.userIdx,      a, b)
+    if (typeof room.pendingAction.handOwnerIdx === 'number') room.pendingAction.handOwnerIdx = remapIdx(room.pendingAction.handOwnerIdx, a, b)
+    if (typeof room.pendingAction.targetIdx    === 'number') room.pendingAction.targetIdx    = remapIdx(room.pendingAction.targetIdx,    a, b)
   }
-  room.positionSwaps.push({ from: a, to: b })
+
+  if (room.pendingPositionSwap) {
+    room.pendingPositionSwap.from = remapIdx(room.pendingPositionSwap.from, a, b)
+    room.pendingPositionSwap.to   = remapIdx(room.pendingPositionSwap.to,   a, b)
+  }
+
+  if (Array.isArray(room.effects)) {
+    room.effects = room.effects.map(e => ({
+      ...e,
+      ownerIdx:  remapIdx(e.ownerIdx,  a, b),
+      targetIdx: remapIdx(e.targetIdx, a, b),
+    }))
+  }
 }
 
 function checkSuperVitals(room) {
   const svEffect = (room.effects ?? []).find(e => e.type === 'SUPER_VITALS')
   if (!svEffect) return
+  const requiredSets = room.settings?.normalCount === 8 ? 2 : 1
   room.players.forEach((p, i) => {
-    const normals = p.chits.filter(c => !isSpecial(c))
-    if (normals.length < 4) return
-    const counts = {}
-    normals.forEach(c => { counts[c.symbol] = (counts[c.symbol] || 0) + 1 })
-    const sym = Object.entries(counts).find(([, v]) => v >= 4)?.[0]
-    if (!sym) return
-    const sig = `${i}:${sym}`
+    if (!isShowHand(p.chits, requiredSets)) return
+    const sig = `${i}:show`
     if (svEffect.data.alerted[sig]) return
     svEffect.data.alerted[sig] = true
     room.superVitalsAlert = {
       id: Date.now() + Math.random(),
       ownerIdx: svEffect.ownerIdx,
       matchingPlayerIdx: i,
-      message: `${p.name} can call SHOW! (${sym}×4)`,
+      message: `${p.name} can call SHOW!`,
       timestamp: Date.now(),
     }
   })
@@ -253,7 +280,10 @@ function runEffects(room, trigger, context, log) {
       if (e.type === 'POSITION_SWAP' && e.ownerIdx === passedPlayerIdx) {
         const nameA = room.players[e.ownerIdx]?.name
         const nameB = room.players[e.targetIdx]?.name
-        swapPlayerIndexes(room, e.ownerIdx, e.targetIdx)
+        const from  = e.ownerIdx
+        const to    = e.targetIdx
+        swapPlayerObjectsAndRefs(room, from, to)
+        room.positionSwaps.push({ from, to })
         log(`🔀 Positions swapped! ${nameA} ↔ ${nameB}`)
         toRemove.push(e.id)
       }
@@ -293,8 +323,31 @@ export function applyAction(room, logs, action) {
 
     case 'SET_MODE': { r.mode = action.mode; break }
 
+    case 'SET_HAND_SETUP': {
+      if (r.phase !== 'lobby') break
+      const { normalCount, specialCount } = action
+      const valid = (normalCount === 4 && specialCount === 2) || (normalCount === 8 && specialCount === 4)
+      if (!valid) break
+      if (!r.settings) r.settings = {}
+      r.settings.normalCount = normalCount
+      r.settings.specialCount = specialCount
+      break
+    }
+
+    case 'SET_ENABLED_SPECIALS': {
+      if (r.phase !== 'lobby') break
+      const { enabledSpecials } = action
+      if (!Array.isArray(enabledSpecials) || enabledSpecials.length === 0) break
+      const validTypes = SPECIALS.map(s => s.type)
+      const filtered = enabledSpecials.filter(t => validTypes.includes(t))
+      if (filtered.length === 0) break
+      if (!r.settings) r.settings = {}
+      r.settings.enabledSpecials = filtered
+      break
+    }
+
     case 'START': {
-      const hands = dealHands(r.players.length, r.mode)
+      const hands = dealHands(r.players.length, r.mode, r.settings)
       r.players = r.players.map((p, i) => ({
         ...p, chits: hands[i], isShow: false,
         frozen: false, stunned: false, originalIdx: i,
@@ -304,7 +357,7 @@ export function applyAction(room, logs, action) {
       r.frozenPlayer = -1; r.stunnedPlayer = -1
       r.puppeteerInfo = null; r.positionSwaps = []; r.pendingAction = null
       r.pendingPositionSwap = null; r.superVitalsUsed = false
-      r.effects = []; r.superVitalsAlert = null
+      r.effects = []; r.superVitalsAlert = null; r.roundResults = null
       log(`Round 1 started! ${r.players[0].name}'s turn.`)
       break
     }
@@ -554,12 +607,23 @@ export function applyAction(room, logs, action) {
       const base = (n + 2) * 10
       const sorted = [...r.showClicks].sort((a, b) => a.timestamp - b.timestamp)
       const clickedIdxs = sorted.map(c => c.playerIdx)
+      const requiredShowSets = r.settings?.normalCount === 8 ? 2 : 1
+      const roundPts = {}
       r.players = r.players.map((p, i) => {
         const pos = clickedIdxs.indexOf(i)
         const pts = pos >= 0 ? Math.max(0, base - pos * 10) : 0
+        roundPts[i] = pts
         log(`${p.name}: ${pts > 0 ? '+' : ''}${pts} pts`)
-        return { ...p, score: p.score + pts, isShow: isShowHand(p.chits) }
+        return { ...p, score: p.score + pts, isShow: isShowHand(p.chits, requiredShowSets) }
       })
+      r.roundResults = r.players.map((p, i) => ({
+        playerIdx: i,
+        name: p.name,
+        chits: p.chits,
+        isShow: p.isShow,
+        score: p.score,
+        roundPoints: roundPts[i] ?? 0,
+      }))
       r.phase = 'afterShow'; break
     }
 
@@ -598,7 +662,7 @@ export function applyAction(room, logs, action) {
     }
 
     case 'NEXT_ROUND': {
-      const hands = dealHands(r.players.length, r.mode)
+      const hands = dealHands(r.players.length, r.mode, r.settings)
       r.players = r.players.map((p, i) => ({
         ...p, chits: hands[i], isShow: false, frozen: false, stunned: false,
       }))
@@ -607,7 +671,7 @@ export function applyAction(room, logs, action) {
       r.frozenPlayer = -1; r.stunnedPlayer = -1
       r.puppeteerInfo = null; r.positionSwaps = []; r.pendingAction = null
       r.pendingPositionSwap = null; r.superVitalsUsed = false
-      r.effects = []; r.superVitalsAlert = null
+      r.effects = []; r.superVitalsAlert = null; r.roundResults = null
       log('─── Round ' + r.round + ' started! ' + r.players[0].name + "'s turn. ───")
       break
     }
@@ -628,7 +692,7 @@ export function applyAction(room, logs, action) {
       r.frozenPlayer = -1; r.stunnedPlayer = -1
       r.puppeteerInfo = null; r.positionSwaps = []; r.pendingAction = null
       r.pendingPositionSwap = null; r.superVitalsUsed = false
-      r.effects = []; r.superVitalsAlert = null
+      r.effects = []; r.superVitalsAlert = null; r.roundResults = null
       break
     }
   }

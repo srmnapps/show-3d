@@ -55,9 +55,10 @@ export function useGame() {
   const showAll       = ['afterShow','roundEnd','ended'].includes(room?.phase)
   const hasJoinedShow = room?.showClicks?.some(c => c.playerIdx === myIdx) ?? false
   const canJoinShow   = room?.phase === 'showWindow' && !hasJoinedShow
+  const requiredShowSets = room?.settings?.normalCount === 8 ? 2 : 1
   const canCallShow   = room?.phase === 'playing'
     && !mustPassNormal && !isStunned
-    && isShowHand(myPlayer?.chits ?? [])
+    && isShowHand(myPlayer?.chits ?? [], requiredShowSets)
   const amIStunned    = room?.stunnedPlayer === myIdx
 
   const nextPlayerIdx = room ? ((room.currentTurn + room.direction + room.players.length) % room.players.length) : -1
@@ -87,7 +88,7 @@ export function useGame() {
     if (newCount > cur.length) {
       updateMyRevealed([...cur, ...Array(newCount - cur.length).fill(false)])
     } else if (newCount < cur.length) {
-      updateMyRevealed(Array(newCount).fill(false))
+      updateMyRevealed(cur.slice(0, newCount))
     }
   }, [])
 
@@ -333,11 +334,22 @@ export function useGame() {
   // ── Mode ─────────────────────────────────────────────────
   const setMode = useCallback((mode) => sendAction({ type:'SET_MODE', mode }), [sendAction])
 
+  // ── Settings ──────────────────────────────────────────────
+  const setHandSetup = useCallback((normalCount, specialCount) => {
+    sendAction({ type:'SET_HAND_SETUP', normalCount, specialCount })
+  }, [sendAction])
+
+  const setEnabledSpecials = useCallback((enabledSpecials) => {
+    sendAction({ type:'SET_ENABLED_SPECIALS', enabledSpecials })
+  }, [sendAction])
+
   // ── Start ────────────────────────────────────────────────
   const startGame = useCallback(() => {
     setLoading(true)
-    const count = room?.mode === 'special' ? 6 : 4
-    updateMyRevealed(Array(count).fill(false))
+    const s  = room?.settings
+    const nc = s?.normalCount ?? 4
+    const sc = room?.mode === 'normal' ? 0 : (s?.specialCount ?? 2)
+    updateMyRevealed(Array(nc + sc).fill(false))
     setMustPassNormal(false); setSpecialAction(null); setIsStunned(false)
     sendAction({ type:'START' })
   }, [sendAction, room])
@@ -398,6 +410,11 @@ export function useGame() {
   // ── Use special ───────────────────────────────────────────
   const useSpecial = useCallback((chitIdx, special, forActing = false) => {
     setSelectedChit(-1)
+    if (!forActing) {
+      const rev = [...myRevealedRef.current]
+      rev.splice(chitIdx, 1)
+      updateMyRevealed(rev)
+    }
     const pidx       = forActing ? roomRef.current?.puppeteerInfo?.targetIdx : myIdxRef.current
     const actorIdx   = myIdxRef.current
     const handOwnerIdx = pidx
@@ -448,7 +465,8 @@ export function useGame() {
       },
       SUPER_VITALS: () => {
         const r = roomRef.current
-        const data = computeSuperVitals(r.players, myIdxRef.current)
+        const reqSets = r.settings?.normalCount === 8 ? 2 : 1
+        const data = computeSuperVitals(r.players, myIdxRef.current, reqSets)
         setSpecialAction({ type:'SUPER_VITALS_RESULT', data })
         sendAction({ type:'USE_SUPER_VITALS', ...base })
         setMustPassIfTurn()
@@ -514,8 +532,11 @@ export function useGame() {
   }, [canJoinShow, sendAction])
 
   const nextRound = useCallback(() => {
-    const count = roomRef.current?.mode === 'special' ? 6 : 4
-    updateMyRevealed(Array(count).fill(false))
+    const r  = roomRef.current
+    const s  = r?.settings
+    const nc = s?.normalCount ?? 4
+    const sc = r?.mode === 'normal' ? 0 : (s?.specialCount ?? 2)
+    updateMyRevealed(Array(nc + sc).fill(false))
     setMustPassNormal(false); setSpecialAction(null); setIsStunned(false)
     sendAction({ type:'NEXT_ROUND' })
   }, [sendAction])
@@ -541,7 +562,7 @@ export function useGame() {
     specialAction, mustPassNormal, stunFlash, isStunned, amIStunned,
     amIPuppeteer, amIPuppeted, puppetTarget, actingIdx, actingPlayer,
     isSpecialUsableNow,
-    createRoom, joinRoom, startGame, setMode,
+    createRoom, joinRoom, startGame, setMode, setHandSetup, setEnabledSpecials,
     revealChit, onChitClick, passChit, useSpecial, cancelSpecial,
     pickTarget, blindSnatchPickCard, revealedSnatchPick, nukePickCard, dismissVitals, consumeVitals,
     callShow, joinShow,
@@ -565,15 +586,10 @@ function computeVitals(players, myI) {
   }).filter(Boolean)
 }
 
-function computeSuperVitals(players, myI) {
+function computeSuperVitals(players, myI, requiredSets = 1) {
   return players.map((p, i) => {
     if (i === myI) return null
-    const normals = p.chits.filter(c => !isSpecial(c))
-    if (normals.length < 4) return null
-    const counts = {}
-    normals.forEach(c => { counts[c.symbol] = (counts[c.symbol] || 0) + 1 })
-    const maxSame = Math.max(...Object.values(counts))
-    return maxSame >= 4 ? { name:p.name, idx:i } : null
+    return isShowHand(p.chits, requiredSets) ? { name:p.name, idx:i } : null
   }).filter(Boolean)
 }
 
