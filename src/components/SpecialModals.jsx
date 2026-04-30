@@ -92,7 +92,7 @@ function PlayerBtn({ player, idx, onClick, icon }) {
 }
 
 // ── USE or PASS modal ─────────────────────────────────────────
-export function UseOrPassModal({ special, chitIdx, onUse, onPass, onCancel, forActing }) {
+export function UseOrPassModal({ special, chitIdx, onUse, onPass, onCancel, forActing, isMyTurn }) {
   const colorMap = {
     REVERSE:'#1E88E5', FREEZE:'#26C6DA', BLIND_SNATCH:'#FFD600',
     REVEALED_SNATCH:'#AA00FF', STUN_GRENADE:'#E53935', VITALS:'#43A047',
@@ -101,17 +101,18 @@ export function UseOrPassModal({ special, chitIdx, onUse, onPass, onCancel, forA
   }
   const descMap = {
     REVERSE:        'Flip the passing direction for the rest of this round.',
-    FREEZE:         'Freeze the next player — they skip their turn.',
-    BLIND_SNATCH:   'Pick a player and steal a random chit from them — blind!',
-    REVEALED_SNATCH:'Pick a player, see 2 of their chits, take one.',
+    FREEZE:         'Pick a player — their next turn is skipped!',
+    BLIND_SNATCH:   'Pick a player, steal a hidden card, swap with one of your revealed cards.',
+    REVEALED_SNATCH:'Pick a player, see 2 of their cards, swap one with your revealed card.',
     STUN_GRENADE:   'Pick a player — their screen flashes, all chits hidden!',
     VITALS:         'See a probability report of who is close to calling Show.',
-    SUPER_VITALS:   'Instantly know if anyone right now can call Show!',
-    NUKE:           'Destroy one of a target player\'s special cards!',
+    SUPER_VITALS:   'Activate round-long alert: know when anyone reaches 4-match!',
+    NUKE:           'Pick a player and destroy one of their special cards!',
     PUPPETEER:      'Control another player\'s entire turn — see their hand!',
     POSITION_SWAP:  'Swap turn-order position with another player this round.',
   }
   const color = colorMap[special.type] ?? '#1E88E5'
+  const canPass = isMyTurn !== false
   return (
     <Modal emoji={special.emoji} title={special.name} color={color}>
       {forActing && (
@@ -126,9 +127,11 @@ export function UseOrPassModal({ special, chitIdx, onUse, onPass, onCancel, forA
         <button className="btn btn-green btn-lg" onClick={() => onUse(chitIdx, special, forActing)}>
           ✨ Use It
         </button>
-        <button className="btn btn-blue" onClick={() => onPass(chitIdx, forActing)}>
-          📤 Pass It
-        </button>
+        {canPass && (
+          <button className="btn btn-blue" onClick={() => onPass(chitIdx, forActing)}>
+            📤 Pass It
+          </button>
+        )}
       </div>
       <button className="btn btn-ghost" style={{ width:'100%' }} onClick={onCancel}>Cancel</button>
     </Modal>
@@ -138,11 +141,13 @@ export function UseOrPassModal({ special, chitIdx, onUse, onPass, onCancel, forA
 // ── Generic target picker ─────────────────────────────────────
 export function PickTargetModal({ actionType, players, myIdx, exclude, onPick }) {
   const iconMap = {
+    FREEZE_PICK:'🧊',
     BLIND_SNATCH_PICK:'🎲', REVEALED_SNATCH_PICK_TARGET:'👁',
     STUN_GRENADE_PICK:'💥', NUKE_PICK_TARGET:'💣',
     PUPPETEER_PICK:'🎭', POSITION_SWAP_PICK:'🔀',
   }
   const titleMap = {
+    FREEZE_PICK:'Pick Target — Freeze',
     BLIND_SNATCH_PICK:'Pick Target — Blind Snatch',
     REVEALED_SNATCH_PICK_TARGET:'Pick Target — Revealed Snatch',
     STUN_GRENADE_PICK:'Pick Target — Stun Grenade',
@@ -151,14 +156,16 @@ export function PickTargetModal({ actionType, players, myIdx, exclude, onPick })
     POSITION_SWAP_PICK:'Pick Target — Position Swap',
   }
   const hintMap = {
-    BLIND_SNATCH_PICK:'You\'ll steal a random chit blind.',
-    REVEALED_SNATCH_PICK_TARGET:'You\'ll see 2 of their chits and pick one.',
+    FREEZE_PICK:'Their turn will be skipped once.',
+    BLIND_SNATCH_PICK:'You\'ll steal and swap a hidden card.',
+    REVEALED_SNATCH_PICK_TARGET:'You\'ll see 2 of their cards and swap one.',
     STUN_GRENADE_PICK:'Their screen flashes and all chits go hidden!',
     NUKE_PICK_TARGET:'You\'ll pick which of their specials to destroy.',
     PUPPETEER_PICK:'You\'ll control their entire turn — see their hand!',
     POSITION_SWAP_PICK:'You\'ll swap turn positions for this round.',
   }
   const colorMap = {
+    FREEZE_PICK:'#26C6DA',
     BLIND_SNATCH_PICK:'#FFD600', REVEALED_SNATCH_PICK_TARGET:'#AA00FF',
     STUN_GRENADE_PICK:'#E53935', NUKE_PICK_TARGET:'#E53935',
     PUPPETEER_PICK:'#7B1FA2', POSITION_SWAP_PICK:'#00897B',
@@ -171,7 +178,7 @@ export function PickTargetModal({ actionType, players, myIdx, exclude, onPick })
       </p>
       <div>
         {players.map((p, i) => {
-          if (i === myIdx || exclude.includes(i)) return null
+          if (i === myIdx || (exclude ?? []).includes(i)) return null
           return (
             <PlayerBtn key={p.id} player={p} idx={i}
               icon={iconMap[actionType]}
@@ -184,62 +191,82 @@ export function PickTargetModal({ actionType, players, myIdx, exclude, onPick })
   )
 }
 
-// ── Blind Snatch: target's cards all masked; user picks one ──────
-export function BlindSnatchPickModal({ targetIdx, players, myPlayer, myRevealed, onPick }) {
-  const [sel, setSel] = useState(-1)
-  const targetPlayer = players[targetIdx]
-  const targetChits  = targetPlayer?.chits ?? []
-  const myChits      = myPlayer?.chits ?? []
+// ── Blind Snatch: select target hidden card + own revealed card ──
+export function BlindSnatchPickModal({ targetIdx, handOwnerIdx, players, myIdx, myRevealed, onPick }) {
+  const [selTarget, setSelTarget] = useState(-1)
+  const [selOwn,    setSelOwn]    = useState(-1)
 
-  const normals = targetChits.map((c, i) => ({ c, i })).filter(({ c }) => !isSpecial(c))
+  const targetPlayer    = players[targetIdx]
+  const targetChits     = targetPlayer?.chits ?? []
+  const hoIdx           = handOwnerIdx ?? myIdx
+  const handOwnerPlayer = players[hoIdx]
+  const handOwnerChits  = handOwnerPlayer?.chits ?? []
+  const isOwnHand       = hoIdx === myIdx
+
+  const targetNormals = targetChits.map((c, i) => ({ c, i })).filter(({ c }) => !isSpecial(c))
+  // All normal cards from hand owner — no revealed filter (player knows their own cards)
+  const ownRevealedCards = handOwnerChits.map((c, i) => ({ c, i })).filter(({ c }) => !isSpecial(c))
+
+  const canConfirm = selTarget !== -1 && selOwn !== -1 && targetNormals.length > 0 && ownRevealedCards.length > 0
 
   return (
-    <Modal emoji="🎲" title={`Pick blind from ${targetPlayer?.name ?? 'Target'}`} color="#FFD600">
+    <Modal emoji="🎲" title={`Swap with ${targetPlayer?.name ?? 'Target'}`} color="#FFD600">
       <p style={{ color:'rgba(255,214,0,.7)', fontSize:12, textAlign:'center', marginBottom:16, fontWeight:800 }}>
-        All cards are hidden — pick one to steal!
+        Select one of their cards + one of your revealed cards to swap!
       </p>
 
       <div style={{ fontSize:11, color:'rgba(255,255,255,.45)', fontWeight:800, marginBottom:8, textAlign:'center' }}>
-        {targetPlayer?.name ?? 'Target'}'s cards
+        {targetPlayer?.name ?? 'Target'}'s cards (hidden)
       </div>
       <div style={{ display:'flex', gap:10, justifyContent:'center', flexWrap:'wrap', marginBottom:20 }}>
-        {normals.map(({ c, i }) => (
-          <MiniChit key={i} chit={c} masked selected={sel === i} onClick={() => setSel(i)} label="pick?" />
+        {targetNormals.map(({ c, i }) => (
+          <MiniChit key={i} chit={c} masked selected={selTarget === i} onClick={() => setSelTarget(prev => prev === i ? -1 : i)} label="pick?" />
         ))}
-        {normals.length === 0 && (
-          <p style={{ color:'rgba(255,255,255,.4)', fontSize:13 }}>No normal chits to steal!</p>
+        {targetNormals.length === 0 && (
+          <p style={{ color:'rgba(255,255,255,.4)', fontSize:13 }}>No normal cards to steal!</p>
         )}
       </div>
 
       <div style={{ fontSize:11, color:'rgba(255,255,255,.45)', fontWeight:800, marginBottom:8, textAlign:'center' }}>
-        Your cards
+        Your revealed cards to give
       </div>
       <div style={{ display:'flex', gap:10, justifyContent:'center', flexWrap:'wrap', marginBottom:20 }}>
-        {myChits.map((c, i) => (
-          <MiniChit key={i} chit={c} masked={!myRevealed?.[i]} />
+        {ownRevealedCards.map(({ c, i }) => (
+          <MiniChit key={i} chit={c} selected={selOwn === i} onClick={() => setSelOwn(prev => prev === i ? -1 : i)} label="give?" />
         ))}
+        {ownRevealedCards.length === 0 && (
+          <p style={{ color:'rgba(255,255,255,.4)', fontSize:13 }}>No revealed cards to give! Reveal one first.</p>
+        )}
       </div>
 
       <button className="btn btn-yellow" style={{ width:'100%' }}
-        disabled={sel === -1 || normals.length === 0}
-        onClick={() => onPick(sel)}>
-        🎲 Steal This Card!
+        disabled={!canConfirm}
+        onClick={() => onPick(selTarget, selOwn)}>
+        🎲 Swap Cards!
       </button>
     </Modal>
   )
 }
 
-// ── Revealed Snatch: 2 of target's chits revealed; user picks one ──
-export function RevealedSnatchPickModal({ options, targetName, targetIdx, players, myPlayer, myRevealed, onPick }) {
-  const [sel, setSel] = useState(-1)
-  const targetChits   = players[targetIdx]?.chits ?? []
-  const myChits       = myPlayer?.chits ?? []
-  const revealedIdxs  = new Set(options.map(o => o.i))
+// ── Revealed Snatch: 2 target cards revealed; select + own revealed card ──
+export function RevealedSnatchPickModal({ options, targetName, targetIdx, handOwnerIdx, players, myIdx, myRevealed, onPick }) {
+  const [selTarget, setSelTarget] = useState(-1)
+  const [selOwn,    setSelOwn]    = useState(-1)
+
+  const targetChits     = players[targetIdx]?.chits ?? []
+  const hoIdx           = handOwnerIdx ?? myIdx
+  const handOwnerChits  = players[hoIdx]?.chits ?? []
+  const revealedIdxs    = new Set((options ?? []).map(o => o.i))
+
+  // All normal cards from hand owner — no revealed filter
+  const ownRevealedCards = handOwnerChits.map((c, i) => ({ c, i })).filter(({ c }) => !isSpecial(c))
+
+  const canConfirm = selTarget !== -1 && selOwn !== -1 && ownRevealedCards.length > 0
 
   return (
-    <Modal emoji="👁" title={`Pick from ${targetName}'s chits`} color="#AA00FF">
+    <Modal emoji="👁" title={`Swap with ${targetName}'s chits`} color="#AA00FF">
       <p style={{ color:'rgba(170,0,255,.7)', fontSize:12, textAlign:'center', marginBottom:16, fontWeight:800 }}>
-        👁 2 revealed — pick one to take
+        👁 2 revealed — pick one to swap with your revealed card
       </p>
 
       <div style={{ fontSize:11, color:'rgba(255,255,255,.45)', fontWeight:800, marginBottom:8, textAlign:'center' }}>
@@ -247,14 +274,15 @@ export function RevealedSnatchPickModal({ options, targetName, targetIdx, player
       </div>
       <div style={{ display:'flex', gap:12, justifyContent:'center', flexWrap:'wrap', marginBottom:20 }}>
         {targetChits.map((c, fullIdx) => {
+          if (isSpecial(c)) return null
           const revealed = revealedIdxs.has(fullIdx)
           return (
             <MiniChit
               key={fullIdx}
               chit={c}
               masked={!revealed}
-              selected={sel === fullIdx}
-              onClick={revealed ? () => setSel(fullIdx) : undefined}
+              selected={selTarget === fullIdx}
+              onClick={() => setSelTarget(prev => prev === fullIdx ? -1 : fullIdx)}
               label={revealed ? 'revealed' : 'hidden'}
             />
           )
@@ -262,30 +290,34 @@ export function RevealedSnatchPickModal({ options, targetName, targetIdx, player
       </div>
 
       <div style={{ fontSize:11, color:'rgba(255,255,255,.45)', fontWeight:800, marginBottom:8, textAlign:'center' }}>
-        Your cards
+        Your revealed cards to give
       </div>
       <div style={{ display:'flex', gap:10, justifyContent:'center', flexWrap:'wrap', marginBottom:20 }}>
-        {myChits.map((c, i) => (
-          <MiniChit key={i} chit={c} masked={!myRevealed?.[i]} />
+        {ownRevealedCards.map(({ c, i }) => (
+          <MiniChit key={i} chit={c} selected={selOwn === i} onClick={() => setSelOwn(prev => prev === i ? -1 : i)} label="give?" />
         ))}
+        {ownRevealedCards.length === 0 && (
+          <p style={{ color:'rgba(255,255,255,.4)', fontSize:13 }}>No revealed cards to give! Reveal one first.</p>
+        )}
       </div>
 
       <button className="btn btn-purple" style={{ width:'100%' }}
-        disabled={sel === -1} onClick={() => onPick(sel)}>
-        👁 Take This Chit
+        disabled={!canConfirm}
+        onClick={() => onPick(selTarget, selOwn)}>
+        👁 Swap Cards!
       </button>
     </Modal>
   )
 }
 
-// ── Nuke: pick which special to destroy ──────────────────────
+// ── Nuke: pick which special to destroy (shown masked) ────────
 export function NukePickCardModal({ targetIdx, specials, players, onPick }) {
   const targetName = players[targetIdx]?.name ?? 'Target'
   const [sel, setSel] = useState(-1)
   return (
     <Modal emoji="💣" title={`Nuke ${targetName}'s Special`} color="#E53935">
       <p style={{ color:'rgba(229,57,53,.7)', fontSize:12, textAlign:'center', marginBottom:20, fontWeight:800 }}>
-        Pick which special to destroy permanently!
+        Pick a special to destroy permanently!
       </p>
       {specials.length === 0 ? (
         <p style={{ textAlign:'center', color:'rgba(255,255,255,.4)', fontSize:13, marginBottom:20 }}>
@@ -295,8 +327,8 @@ export function NukePickCardModal({ targetIdx, specials, players, onPick }) {
         <div style={{ display:'flex', gap:12, justifyContent:'center', flexWrap:'wrap', marginBottom:24 }}>
           {specials.map(({ c, i }) => (
             <div key={i} style={{ textAlign:'center' }}>
-              <MiniChit chit={c} selected={sel===i} onClick={() => setSel(i)} />
-              <div style={{ fontSize:10, color:'rgba(255,255,255,.5)', marginTop:4, fontWeight:700 }}>{c.name}</div>
+              <MiniChit chit={c} masked selected={sel===i} onClick={() => setSel(i)} />
+              <div style={{ fontSize:10, color:'rgba(255,255,255,.3)', marginTop:4, fontWeight:700 }}>special</div>
             </div>
           ))}
         </div>
@@ -435,7 +467,6 @@ export function PuppeteerHandModal({ targetPlayer, targetIdx, targetName, select
         You see their full hand — select a chit to pass or use a special!
       </p>
 
-      {/* Target's chits — all revealed to puppeteer */}
       <div style={{ display:'flex', gap:8, justifyContent:'center', flexWrap:'wrap', marginBottom:20 }}>
         {chits.map((c, i) => (
           <div key={i} style={{ textAlign:'center' }}>
@@ -478,7 +509,10 @@ export function SpecialModalManager({
 }) {
   if (!specialAction && !amIPuppeted && !amIPuppeteer) return null
 
-  // Puppeteer controls target's hand (only show when no other modal is active)
+  // Compute isMyTurn from room state
+  const isMyTurn = room?.currentTurn === myIdx
+    || !!(room?.effects?.find(e => e.type === 'PUPPETEER' && e.ownerIdx === myIdx && e.targetIdx === room?.currentTurn))
+
   if (amIPuppeteer && !specialAction) {
     return (
       <PuppeteerHandModal
@@ -493,7 +527,6 @@ export function SpecialModalManager({
     )
   }
 
-  // Target is being puppeteered
   if (amIPuppeted && !specialAction) {
     return <PuppetedOverlay puppeteerName={puppeteerName} />
   }
@@ -506,6 +539,7 @@ export function SpecialModalManager({
         <UseOrPassModal
           special={specialAction.special} chitIdx={specialAction.chitIdx}
           forActing={specialAction.forActing}
+          isMyTurn={isMyTurn}
           onUse={onUse} onPass={onPass} onCancel={onCancel}
         />
       )
@@ -522,8 +556,9 @@ export function SpecialModalManager({
       return (
         <BlindSnatchPickModal
           targetIdx={specialAction.targetIdx}
+          handOwnerIdx={specialAction.handOwnerIdx ?? myIdx}
           players={room?.players ?? []}
-          myPlayer={myPlayer}
+          myIdx={myIdx}
           myRevealed={myRevealed}
           onPick={onBlindSnatchPickCard}
         />
@@ -533,9 +568,10 @@ export function SpecialModalManager({
         <RevealedSnatchPickModal
           options={specialAction.options}
           targetIdx={specialAction.targetIdx}
+          handOwnerIdx={specialAction.handOwnerIdx ?? myIdx}
           targetName={room?.players[specialAction.targetIdx]?.name ?? 'Target'}
           players={room?.players ?? []}
-          myPlayer={myPlayer}
+          myIdx={myIdx}
           myRevealed={myRevealed}
           onPick={onRevealedSnatchPick}
         />

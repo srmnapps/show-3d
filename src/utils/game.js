@@ -13,6 +13,19 @@ export const SPECIALS = [
   { type: 'POSITION_SWAP',  emoji: '🔀', name: 'Position Swap'   },
 ]
 
+export const SPECIAL_CONFIG = {
+  REVERSE:        { timing:'TURN_ONLY', consume:true, kind:'INSTANT' },
+  FREEZE:         { timing:'ANYTIME',   consume:true, kind:'EFFECT',             trigger:'BEFORE_TARGET_TURN_OR_RECEIVE', expires:'ONCE' },
+  NUKE:           { timing:'ANYTIME',   consume:true, kind:'TARGET_SPECIAL_DESTROY' },
+  BLIND_SNATCH:   { timing:'TURN_ONLY', consume:true, kind:'SWAP',               targetCards:'NORMAL_HIDDEN',       ownCards:'REVEALED' },
+  REVEALED_SNATCH:{ timing:'TURN_ONLY', consume:true, kind:'SWAP',               targetCards:'NORMAL_TWO_REVEALED', ownCards:'REVEALED' },
+  STUN_GRENADE:   { timing:'ANYTIME',   consume:true, kind:'EFFECT',             trigger:'UNTIL_TARGET_PASS',       expires:'AFTER_TARGET_PASS' },
+  VITALS:         { timing:'ANYTIME',   consume:true, kind:'SNAPSHOT' },
+  SUPER_VITALS:   { timing:'ANYTIME',   consume:true, kind:'ROUND_EFFECT',       trigger:'AFTER_CARD_CHANGE',       expires:'ROUND_END' },
+  POSITION_SWAP:  { timing:'TURN_ONLY', consume:true, kind:'EFFECT',             trigger:'AFTER_OWNER_NORMAL_PASS', expires:'ONCE' },
+  PUPPETEER:      { timing:'ANYTIME',   consume:true, kind:'TURN_CONTROL',       trigger:'ON_TARGET_TURN',          expires:'AFTER_TARGET_PASS' },
+}
+
 export const AVATAR_COLORS = [
   { bg:"#EEEDFE", fg:"#3C3489" },
   { bg:"#E1F5EE", fg:"#085041" },
@@ -95,7 +108,7 @@ export function makePlayer(id, name, colorIdx) {
   return {
     id, name, color: colorIdx, score: 0,
     chits: [], isShow: false, frozen: false, stunned: false,
-    originalIdx: colorIdx, // for position swap restore
+    originalIdx: colorIdx,
   }
 }
 
@@ -107,15 +120,18 @@ export function makeRoom(code, host) {
     players: [host], showClicks: [],
     frozenPlayer: -1,
     stunnedPlayer: -1,
-    puppeteerInfo: null,      // { puppeteerIdx, targetIdx }
-    positionSwaps: [],        // [{ from, to }] reset each round
-    pendingPositionSwap: null,// { from, to } — applied on next PASS
-    pendingAction: null,      // generic pending for multi-step specials
+    puppeteerInfo: null,
+    positionSwaps: [],
+    pendingPositionSwap: null,
+    pendingAction: null,
     mode: 'special',
     superVitalsUsed: false,
+    effects: [],
+    superVitalsAlert: null,
   }
 }
 
+// ── Internal helpers ──────────────────────────────────────────
 function nextPlayer(room, fromIdx, skipFrozen = false) {
   const n = room.players.length
   let next = (fromIdx + room.direction + n) % n
@@ -125,15 +141,7 @@ function nextPlayer(room, fromIdx, skipFrozen = false) {
   return next
 }
 
-function getSubject(r) {
-  if (r.puppeteerInfo && r.currentTurn === r.puppeteerInfo.targetIdx) {
-    return r.puppeteerInfo.targetIdx
-  }
-  return r.currentTurn
-}
-
 function removeSpecial(player, type, chitIdx) {
-  // Use the exact slot when caller knows which card was tapped
   if (chitIdx != null && player.chits[chitIdx] && isSpecial(player.chits[chitIdx]) && player.chits[chitIdx].type === type) {
     player.chits.splice(chitIdx, 1)
     return
@@ -142,9 +150,142 @@ function removeSpecial(player, type, chitIdx) {
   if (idx !== -1) player.chits.splice(idx, 1)
 }
 
+function makeEffect(type, ownerIdx, targetIdx, trigger, expires, data = {}) {
+  return { id: Date.now() + Math.random(), type, ownerIdx, targetIdx, trigger, expires, data }
+}
+
+function getActivePuppeteerEffect(room) {
+  return (room.effects ?? []).find(e => e.type === 'PUPPETEER' && e.targetIdx === room.currentTurn) ?? null
+}
+
+function resolveActorHandOwner(room, action) {
+  if (action.actorIdx != null && action.handOwnerIdx != null) {
+    const ppe = getActivePuppeteerEffect(room)
+    const isPuppeteerControl = ppe != null && ppe.ownerIdx === action.actorIdx && ppe.targetIdx === action.handOwnerIdx
+    return { actorIdx: action.actorIdx, handOwnerIdx: action.handOwnerIdx, isPuppeteerControl }
+  }
+  const ppe = getActivePuppeteerEffect(room)
+  if (ppe) {
+    return { actorIdx: ppe.ownerIdx, handOwnerIdx: ppe.targetIdx, isPuppeteerControl: true }
+  }
+  const idx = action.playerIdx ?? 0
+  return { actorIdx: idx, handOwnerIdx: idx, isPuppeteerControl: false }
+}
+
+function hasSpecial(player, type, chitIdx) {
+  if (chitIdx != null && player.chits[chitIdx] && isSpecial(player.chits[chitIdx]) && player.chits[chitIdx].type === type) return true
+  return player.chits.some(c => isSpecial(c) && c.type === type)
+}
+
+function consumeSpecial(room, handOwnerIdx, type, chitIdx) {
+  removeSpecial(room.players[handOwnerIdx], type, chitIdx)
+}
+
+function validateSpecialUse(room, action, specialType, actorIdx, handOwnerIdx) {
+  const cfg = SPECIAL_CONFIG[specialType]
+  if (!cfg) return false
+  if (!room.players[handOwnerIdx]) return false
+  if (!hasSpecial(room.players[handOwnerIdx], specialType, action.chitIdx)) return false
+  if (cfg.timing === 'TURN_ONLY' && handOwnerIdx !== room.currentTurn) return false
+  const ppe = getActivePuppeteerEffect(room)
+  if (ppe && actorIdx === ppe.targetIdx) return false
+  return true
+}
+
+function swapPlayerIndexes(room, a, b) {
+  const tmp = room.players[a]
+  room.players[a] = room.players[b]
+  room.players[b] = tmp
+  const remap = i => (i === a ? b : i === b ? a : i)
+  room.currentTurn   = remap(room.currentTurn)
+  if (room.frozenPlayer  >= 0) room.frozenPlayer  = remap(room.frozenPlayer)
+  if (room.stunnedPlayer >= 0) room.stunnedPlayer = remap(room.stunnedPlayer)
+  room.effects = (room.effects ?? []).map(e => ({
+    ...e,
+    ownerIdx:  remap(e.ownerIdx),
+    targetIdx: remap(e.targetIdx),
+  }))
+  if (room.puppeteerInfo) {
+    room.puppeteerInfo = {
+      puppeteerIdx: remap(room.puppeteerInfo.puppeteerIdx),
+      targetIdx:    remap(room.puppeteerInfo.targetIdx),
+    }
+  }
+  if (room.pendingAction) {
+    const pa = room.pendingAction
+    if (pa.userIdx      != null) pa.userIdx      = remap(pa.userIdx)
+    if (pa.targetIdx    != null) pa.targetIdx    = remap(pa.targetIdx)
+    if (pa.handOwnerIdx != null) pa.handOwnerIdx = remap(pa.handOwnerIdx)
+  }
+  room.positionSwaps.push({ from: a, to: b })
+}
+
+function checkSuperVitals(room) {
+  const svEffect = (room.effects ?? []).find(e => e.type === 'SUPER_VITALS')
+  if (!svEffect) return
+  room.players.forEach((p, i) => {
+    const normals = p.chits.filter(c => !isSpecial(c))
+    if (normals.length < 4) return
+    const counts = {}
+    normals.forEach(c => { counts[c.symbol] = (counts[c.symbol] || 0) + 1 })
+    const sym = Object.entries(counts).find(([, v]) => v >= 4)?.[0]
+    if (!sym) return
+    const sig = `${i}:${sym}`
+    if (svEffect.data.alerted[sig]) return
+    svEffect.data.alerted[sig] = true
+    room.superVitalsAlert = {
+      id: Date.now() + Math.random(),
+      ownerIdx: svEffect.ownerIdx,
+      matchingPlayerIdx: i,
+      message: `${p.name} can call SHOW! (${sym}×4)`,
+      timestamp: Date.now(),
+    }
+  })
+}
+
+function runEffects(room, trigger, context, log) {
+  if (!room.effects) room.effects = []
+  const toRemove = []
+
+  if (trigger === 'AFTER_OWNER_NORMAL_PASS') {
+    const { passedPlayerIdx } = context
+    room.effects.forEach(e => {
+      if (e.type === 'POSITION_SWAP' && e.ownerIdx === passedPlayerIdx) {
+        const nameA = room.players[e.ownerIdx]?.name
+        const nameB = room.players[e.targetIdx]?.name
+        swapPlayerIndexes(room, e.ownerIdx, e.targetIdx)
+        log(`🔀 Positions swapped! ${nameA} ↔ ${nameB}`)
+        toRemove.push(e.id)
+      }
+    })
+  }
+
+  if (trigger === 'AFTER_TARGET_PASS') {
+    const { passedPlayerIdx } = context
+    room.effects.forEach(e => {
+      if (e.type === 'PUPPETEER' && e.targetIdx === passedPlayerIdx) {
+        room.puppeteerInfo = null
+        toRemove.push(e.id)
+      }
+      if (e.type === 'STUN_GRENADE' && e.targetIdx === passedPlayerIdx) {
+        room.stunnedPlayer = -1
+        if (room.players[passedPlayerIdx]) room.players[passedPlayerIdx].stunned = false
+        toRemove.push(e.id)
+      }
+    })
+  }
+
+  if (trigger === 'AFTER_CARD_CHANGE') {
+    checkSuperVitals(room)
+  }
+
+  room.effects = room.effects.filter(e => !toRemove.includes(e.id))
+}
+
 // ── Pure reducer ──────────────────────────────────────────────
 export function applyAction(room, logs, action) {
   const r  = JSON.parse(JSON.stringify(room))
+  if (!r.effects) r.effects = []
   const lg = [...logs]
   const log = m => lg.unshift(m)
 
@@ -163,76 +304,79 @@ export function applyAction(room, logs, action) {
       r.frozenPlayer = -1; r.stunnedPlayer = -1
       r.puppeteerInfo = null; r.positionSwaps = []; r.pendingAction = null
       r.pendingPositionSwap = null; r.superVitalsUsed = false
+      r.effects = []; r.superVitalsAlert = null
       log(`Round 1 started! ${r.players[0].name}'s turn.`)
       break
     }
 
     case 'PASS': {
-      const pi = action.playerIdx
+      const { handOwnerIdx } = resolveActorHandOwner(r, action)
+      const pi = handOwnerIdx
+      if (pi !== r.currentTurn) break
+
       const ni = nextPlayer(r, pi, r.frozenPlayer !== -1)
       const [chit] = r.players[pi].chits.splice(action.chitIdx, 1)
       r.players[ni].chits.push(chit)
 
-      // Lift stun after passing
-      if (pi === r.stunnedPlayer) {
-        r.stunnedPlayer = -1; r.players[pi].stunned = false
-      }
-      // End puppeteer control
-      if (r.puppeteerInfo?.targetIdx === pi) {
-        r.puppeteerInfo = null
-      }
-
       r.currentTurn = ni
       r.frozenPlayer = -1
       r.players.forEach(p => { p.frozen = false })
+      r.effects = r.effects.filter(e => e.type !== 'FREEZE')
+
       log(`${r.players[pi].name} passed a chit to ${r.players[ni].name}.`)
 
-      // Apply deferred position swap after the pass
-      if (r.pendingPositionSwap) {
-        const { from, to } = r.pendingPositionSwap
-        const fromName = r.players[from].name
-        const toName   = r.players[to].name
-        const tmp = r.players[from]
-        r.players[from] = r.players[to]
-        r.players[to] = tmp
-        r.positionSwaps.push({ from, to })
-        if (r.currentTurn === from) r.currentTurn = to
-        else if (r.currentTurn === to) r.currentTurn = from
-        r.pendingPositionSwap = null
-        log(`🔀 Positions swapped! ${fromName} ↔ ${toName}`)
+      runEffects(r, 'AFTER_OWNER_NORMAL_PASS', { passedPlayerIdx: pi }, log)
+      runEffects(r, 'AFTER_TARGET_PASS',        { passedPlayerIdx: pi }, log)
+      runEffects(r, 'AFTER_CARD_CHANGE',         {},                     log)
+
+      // Activate puppeteer control when the target's turn arrives
+      if (r.puppeteerInfo && !r.puppeteerInfo.active && r.puppeteerInfo.targetIdx === r.currentTurn) {
+        r.puppeteerInfo = { ...r.puppeteerInfo, active: true }
       }
       break
     }
 
     case 'USE_REVERSE': {
-      const pi = getSubject(r)
-      if (action.playerIdx !== pi) break
-      removeSpecial(r.players[pi], 'REVERSE', action.chitIdx)
+      const { actorIdx, handOwnerIdx } = resolveActorHandOwner(r, action)
+      if (!validateSpecialUse(r, action, 'REVERSE', actorIdx, handOwnerIdx)) break
+      consumeSpecial(r, handOwnerIdx, 'REVERSE', action.chitIdx)
       r.direction *= -1
-      log(`🔄 ${r.players[pi].name} played Reverse! Direction flipped.`)
+      log(`🔄 ${r.players[actorIdx].name} played Reverse! Direction flipped.`)
       break
     }
 
     case 'USE_FREEZE': {
-      const pi = getSubject(r)
-      if (action.playerIdx !== pi) break
-      removeSpecial(r.players[pi], 'FREEZE', action.chitIdx)
-      const frozen = nextPlayer(r, pi)
-      r.frozenPlayer = frozen; r.players[frozen].frozen = true
-      log(`🧊 ${r.players[pi].name} froze ${r.players[frozen].name}!`)
+      const { actorIdx, handOwnerIdx } = resolveActorHandOwner(r, action)
+      if (!validateSpecialUse(r, action, 'FREEZE', actorIdx, handOwnerIdx)) break
+      consumeSpecial(r, handOwnerIdx, 'FREEZE', action.chitIdx)
+      r.pendingAction = { type: 'FREEZE', userIdx: actorIdx, handOwnerIdx }
+      r.phase = 'pendingSpecial'
+      log(`🧊 ${r.players[actorIdx].name} plays Freeze!`)
       break
     }
 
-    // Blind Snatch: pick target → see masked cards → pick one blind
-    case 'USE_BLIND_SNATCH': {
-      const pi = getSubject(r)
-      if (action.playerIdx !== pi) break
-      removeSpecial(r.players[pi], 'BLIND_SNATCH', action.chitIdx)
-      r.pendingAction = { type: 'BLIND_SNATCH', userIdx: pi }
-      r.phase = 'pendingSpecial'
-      log(`🎲 ${r.players[pi].name} plays Blind Snatch!`)
+    case 'FREEZE_PICK': {
+      const { userIdx } = r.pendingAction
+      const targetIdx = action.targetIdx
+      r.frozenPlayer = targetIdx
+      r.players[targetIdx].frozen = true
+      r.effects.push(makeEffect('FREEZE', userIdx, targetIdx, 'BEFORE_TARGET_TURN_OR_RECEIVE', 'ONCE'))
+      r.pendingAction = null
+      r.phase = 'playing'
+      log(`🧊 ${r.players[userIdx].name} froze ${r.players[targetIdx].name}!`)
       break
     }
+
+    case 'USE_BLIND_SNATCH': {
+      const { actorIdx, handOwnerIdx } = resolveActorHandOwner(r, action)
+      if (!validateSpecialUse(r, action, 'BLIND_SNATCH', actorIdx, handOwnerIdx)) break
+      consumeSpecial(r, handOwnerIdx, 'BLIND_SNATCH', action.chitIdx)
+      r.pendingAction = { type: 'BLIND_SNATCH', userIdx: actorIdx, handOwnerIdx }
+      r.phase = 'pendingSpecial'
+      log(`🎲 ${r.players[actorIdx].name} plays Blind Snatch!`)
+      break
+    }
+
     case 'BLIND_SNATCH_PICK': {
       const { userIdx } = r.pendingAction
       const targetIdx = action.targetIdx
@@ -241,136 +385,150 @@ export function applyAction(room, logs, action) {
       log(`🎲 ${r.players[userIdx].name} picks from ${r.players[targetIdx].name}…`)
       break
     }
+
     case 'BLIND_SNATCH_PICK_CARD': {
-      const { userIdx, targetIdx } = r.pendingAction
-      const [taken] = r.players[targetIdx].chits.splice(action.chitIdx, 1)
-      r.players[userIdx].chits.push(taken)
+      const { userIdx, handOwnerIdx: hoIdx, targetIdx } = r.pendingAction
+      const ho  = hoIdx ?? userIdx
+      const tci = action.targetCardIdx
+      const oci = action.ownCardIdx
+      const targetCard = r.players[targetIdx]?.chits[tci]
+      const ownCard    = r.players[ho]?.chits[oci]
+      if (!targetCard || isSpecial(targetCard) || !ownCard) break
+      r.players[targetIdx].chits[tci] = ownCard
+      r.players[ho].chits[oci] = targetCard
       log(`🎲 ${r.players[userIdx].name} blind-snatched from ${r.players[targetIdx].name}!`)
+      runEffects(r, 'AFTER_CARD_CHANGE', {}, log)
       r.pendingAction = null; r.phase = 'playing'
       break
     }
 
-    // Revealed Snatch: pick target → 2 of their chits revealed → user picks one
     case 'USE_REVEALED_SNATCH': {
-      const pi = getSubject(r)
-      if (action.playerIdx !== pi) break
-      removeSpecial(r.players[pi], 'REVEALED_SNATCH', action.chitIdx)
-      r.pendingAction = { type: 'REVEALED_SNATCH', userIdx: pi }
+      const { actorIdx, handOwnerIdx } = resolveActorHandOwner(r, action)
+      if (!validateSpecialUse(r, action, 'REVEALED_SNATCH', actorIdx, handOwnerIdx)) break
+      consumeSpecial(r, handOwnerIdx, 'REVEALED_SNATCH', action.chitIdx)
+      r.pendingAction = { type: 'REVEALED_SNATCH', userIdx: actorIdx, handOwnerIdx }
       r.phase = 'pendingSpecial'
-      log(`👁 ${r.players[pi].name} plays Revealed Snatch!`)
+      log(`👁 ${r.players[actorIdx].name} plays Revealed Snatch!`)
       break
     }
+
     case 'REVEALED_SNATCH_PICK_TARGET': {
       const { userIdx } = r.pendingAction
       const targetIdx = action.targetIdx
       const normals = r.players[targetIdx].chits
         .map((c, i) => ({ c, i })).filter(({ c }) => !isSpecial(c))
-      // Randomly pick 2 to reveal
-      const shuffled = shuffle([...normals])
-      const revealed2 = shuffled.slice(0, 2)
-      r.pendingAction = {
-        ...r.pendingAction, targetIdx,
-        revealedOptions: revealed2, // [{ c, i }]
-        step: 'picking',
-      }
+      const revealed2 = shuffle([...normals]).slice(0, 2)
+      r.pendingAction = { ...r.pendingAction, targetIdx, revealedOptions: revealed2, step: 'picking' }
       r.phase = 'revealedSnatchPicking'
       log(`👁 ${r.players[userIdx].name} sees 2 of ${r.players[targetIdx].name}'s chits!`)
       break
     }
+
     case 'REVEALED_SNATCH_PICK_CHIT': {
-      const { userIdx, targetIdx } = r.pendingAction
-      const [taken] = r.players[targetIdx].chits.splice(action.chitIdx, 1)
-      r.players[userIdx].chits.push(taken)
+      const { userIdx, handOwnerIdx: hoIdx, targetIdx } = r.pendingAction
+      const ho  = hoIdx ?? userIdx
+      const tci = action.targetCardIdx ?? action.chitIdx
+      const oci = action.ownCardIdx
+      const targetCard = r.players[targetIdx]?.chits[tci]
+      const ownCard    = r.players[ho]?.chits[oci]
+      if (!targetCard || isSpecial(targetCard) || !ownCard) break
+      r.players[targetIdx].chits[tci] = ownCard
+      r.players[ho].chits[oci] = targetCard
       log(`👁 ${r.players[userIdx].name} snatched a revealed chit from ${r.players[targetIdx].name}!`)
+      runEffects(r, 'AFTER_CARD_CHANGE', {}, log)
       r.pendingAction = null; r.phase = 'playing'
       break
     }
 
-    // Stun Grenade
     case 'USE_STUN_GRENADE': {
-      const pi = getSubject(r)
-      if (action.playerIdx !== pi) break
-      removeSpecial(r.players[pi], 'STUN_GRENADE', action.chitIdx)
-      r.pendingAction = { type: 'STUN_GRENADE', userIdx: pi }
+      const { actorIdx, handOwnerIdx } = resolveActorHandOwner(r, action)
+      if (!validateSpecialUse(r, action, 'STUN_GRENADE', actorIdx, handOwnerIdx)) break
+      consumeSpecial(r, handOwnerIdx, 'STUN_GRENADE', action.chitIdx)
+      r.pendingAction = { type: 'STUN_GRENADE', userIdx: actorIdx, handOwnerIdx }
       r.phase = 'pendingSpecial'
-      log(`💥 ${r.players[pi].name} throws a Stun Grenade!`)
+      log(`💥 ${r.players[actorIdx].name} throws a Stun Grenade!`)
       break
     }
+
     case 'STUN_GRENADE_PICK': {
+      const { userIdx } = r.pendingAction
       const targetIdx = action.targetIdx
-      r.stunnedPlayer = targetIdx; r.players[targetIdx].stunned = true
+      r.stunnedPlayer = targetIdx
+      r.players[targetIdx].stunned = true
+      r.effects.push(makeEffect('STUN_GRENADE', userIdx, targetIdx, 'UNTIL_TARGET_PASS', 'AFTER_TARGET_PASS'))
       r.pendingAction = null; r.phase = 'playing'
       log(`💥 ${r.players[targetIdx].name} is stunned! Chits hidden!`)
       break
     }
 
-    // Vitals — client-side only, no state change needed
-    // (handled purely in UI)
-
-    // Super Vitals — client-side only
-    // (handled purely in UI)
-
-    // Nuke: destroy one of target's specials
     case 'USE_NUKE': {
-      const pi = getSubject(r)
-      if (action.playerIdx !== pi) break
-      removeSpecial(r.players[pi], 'NUKE', action.chitIdx)
-      r.pendingAction = { type: 'NUKE', userIdx: pi }
+      const { actorIdx, handOwnerIdx } = resolveActorHandOwner(r, action)
+      if (!validateSpecialUse(r, action, 'NUKE', actorIdx, handOwnerIdx)) break
+      consumeSpecial(r, handOwnerIdx, 'NUKE', action.chitIdx)
+      r.pendingAction = { type: 'NUKE', userIdx: actorIdx, handOwnerIdx }
       r.phase = 'pendingSpecial'
-      log(`💣 ${r.players[pi].name} launches a Nuke!`)
+      log(`💣 ${r.players[actorIdx].name} launches a Nuke!`)
       break
     }
+
     case 'NUKE_PICK_TARGET': {
       const targetIdx = action.targetIdx
       r.pendingAction = { ...r.pendingAction, targetIdx, step: 'pickingCard' }
       r.phase = 'nukePicking'
       break
     }
+
     case 'NUKE_PICK_CARD': {
       const { userIdx, targetIdx } = r.pendingAction
+      const card = r.players[targetIdx]?.chits[action.chitIdx]
+      if (!card || !isSpecial(card)) break
       r.players[targetIdx].chits.splice(action.chitIdx, 1)
-      log(`💣 ${r.players[userIdx].name} nuked a special from ${r.players[targetIdx].name}!`)
+      log(`💣 ${r.players[userIdx].name} nuked ${card.name} from ${r.players[targetIdx].name}!`)
       r.pendingAction = null; r.phase = 'playing'
       break
     }
 
-    // Puppeteer: control target's turn
     case 'USE_PUPPETEER': {
-      const pi = getSubject(r)
-      if (action.playerIdx !== pi) break
-      removeSpecial(r.players[pi], 'PUPPETEER', action.chitIdx)
-      r.pendingAction = { type: 'PUPPETEER', userIdx: pi }
+      const { actorIdx, handOwnerIdx } = resolveActorHandOwner(r, action)
+      if (!validateSpecialUse(r, action, 'PUPPETEER', actorIdx, handOwnerIdx)) break
+      consumeSpecial(r, handOwnerIdx, 'PUPPETEER', action.chitIdx)
+      r.pendingAction = { type: 'PUPPETEER', userIdx: actorIdx, handOwnerIdx }
       r.phase = 'pendingSpecial'
-      log(`🎭 ${r.players[pi].name} plays Puppeteer!`)
+      log(`🎭 ${r.players[actorIdx].name} plays Puppeteer!`)
       break
     }
+
     case 'PUPPETEER_PICK': {
       const { userIdx } = r.pendingAction
       const targetIdx = action.targetIdx
-      r.puppeteerInfo = { puppeteerIdx: userIdx, targetIdx }
+      const nextIdx = nextPlayer(r, r.currentTurn)
+      if (targetIdx === userIdx || targetIdx === nextIdx) break
+      // active:false — puppeteer control activates only when currentTurn reaches targetIdx
+      r.puppeteerInfo = { puppeteerIdx: userIdx, targetIdx, active: false }
+      r.effects.push(makeEffect('PUPPETEER', userIdx, targetIdx, 'ON_TARGET_TURN', 'AFTER_TARGET_PASS'))
       r.pendingAction = null; r.phase = 'playing'
-      // Do NOT force currentTurn — puppeteer activates on target's natural turn
       log(`🎭 ${r.players[userIdx].name} will control ${r.players[targetIdx].name} on their next turn!`)
       break
     }
 
-    // Position Swap: swap turn-order positions
     case 'USE_POSITION_SWAP': {
-      const pi = getSubject(r)
-      if (action.playerIdx !== pi) break
-      removeSpecial(r.players[pi], 'POSITION_SWAP', action.chitIdx)
-      r.pendingAction = { type: 'POSITION_SWAP', userIdx: pi }
+      const { actorIdx, handOwnerIdx } = resolveActorHandOwner(r, action)
+      if (!validateSpecialUse(r, action, 'POSITION_SWAP', actorIdx, handOwnerIdx)) break
+      consumeSpecial(r, handOwnerIdx, 'POSITION_SWAP', action.chitIdx)
+      r.pendingAction = { type: 'POSITION_SWAP', userIdx: actorIdx, handOwnerIdx }
       r.phase = 'pendingSpecial'
-      log(`🔀 ${r.players[pi].name} plays Position Swap!`)
+      log(`🔀 ${r.players[actorIdx].name} plays Position Swap!`)
       break
     }
+
     case 'POSITION_SWAP_PICK': {
-      const { userIdx } = r.pendingAction
-      const targetIdx = action.targetIdx
-      // Defer the actual swap until after the user passes a normal chit
-      r.pendingPositionSwap = { from: userIdx, to: targetIdx }
+      const { userIdx, handOwnerIdx } = r.pendingAction
+      const targetIdx  = action.targetIdx
+      const ownerIdx   = handOwnerIdx ?? userIdx
+      r.effects.push(makeEffect('POSITION_SWAP', ownerIdx, targetIdx, 'AFTER_OWNER_NORMAL_PASS', 'ONCE'))
+      r.pendingPositionSwap = null
       r.pendingAction = null; r.phase = 'playing'
-      log(`🔀 ${r.players[userIdx].name} set up a position swap with ${r.players[targetIdx].name} — pass a chit to trigger!`)
+      log(`🔀 ${r.players[ownerIdx].name} set up a position swap with ${r.players[targetIdx].name} — pass a chit to trigger!`)
       break
     }
 
@@ -382,6 +540,7 @@ export function applyAction(room, logs, action) {
       log(`🎉 ${r.players[ci].name} called SHOW!`)
       break
     }
+
     case 'SHOW_JOIN': {
       if (r.phase !== 'showWindow') break
       if (r.showClicks.find(c => c.playerIdx === action.playerIdx)) break
@@ -389,6 +548,7 @@ export function applyAction(room, logs, action) {
       log(`${r.players[action.playerIdx].name} joined the show!`)
       break
     }
+
     case 'SHOW_RESOLVE': {
       const n = r.players.length
       const base = (n + 2) * 10
@@ -402,25 +562,28 @@ export function applyAction(room, logs, action) {
       })
       r.phase = 'afterShow'; break
     }
-    // Vitals & Super Vitals — client-side display only, just consume the card
+
     case 'USE_VITALS': {
-      const pi = getSubject(r)
-      if (action.playerIdx !== pi) break
-      removeSpecial(r.players[pi], 'VITALS', action.chitIdx)
-      log('📊 ' + r.players[pi].name + ' used Vitals!')
-      break
-    }
-    case 'USE_SUPER_VITALS': {
-      const pi = getSubject(r)
-      if (action.playerIdx !== pi || r.superVitalsUsed) break
-      removeSpecial(r.players[pi], 'SUPER_VITALS', action.chitIdx)
-      r.superVitalsUsed = true
-      log('⚡ ' + r.players[pi].name + ' used Super Vitals!')
+      const { actorIdx, handOwnerIdx } = resolveActorHandOwner(r, action)
+      if (!validateSpecialUse(r, action, 'VITALS', actorIdx, handOwnerIdx)) break
+      consumeSpecial(r, handOwnerIdx, 'VITALS', action.chitIdx)
+      log('📊 ' + r.players[actorIdx].name + ' used Vitals!')
       break
     }
 
-        case 'ROUND_END': {
-      // Restore position swaps
+    case 'USE_SUPER_VITALS': {
+      const { actorIdx, handOwnerIdx } = resolveActorHandOwner(r, action)
+      if (!validateSpecialUse(r, action, 'SUPER_VITALS', actorIdx, handOwnerIdx)) break
+      if (r.effects.some(e => e.type === 'SUPER_VITALS')) break
+      consumeSpecial(r, handOwnerIdx, 'SUPER_VITALS', action.chitIdx)
+      r.effects.push(makeEffect('SUPER_VITALS', actorIdx, -1, 'AFTER_CARD_CHANGE', 'ROUND_END', { alerted: {} }))
+      r.superVitalsUsed = true
+      log('⚡ ' + r.players[actorIdx].name + ' activated Super Vitals!')
+      runEffects(r, 'AFTER_CARD_CHANGE', {}, log)
+      break
+    }
+
+    case 'ROUND_END': {
       if (r.positionSwaps.length > 0) {
         ;[...r.positionSwaps].reverse().forEach(({ from, to }) => {
           const tmp = r.players[from]
@@ -429,8 +592,11 @@ export function applyAction(room, logs, action) {
         })
       }
       r.pendingPositionSwap = null
+      r.effects = r.effects.filter(e => e.expires !== 'ROUND_END')
+      r.superVitalsAlert = null
       r.phase = 'roundEnd'; break
     }
+
     case 'NEXT_ROUND': {
       const hands = dealHands(r.players.length, r.mode)
       r.players = r.players.map((p, i) => ({
@@ -441,15 +607,18 @@ export function applyAction(room, logs, action) {
       r.frozenPlayer = -1; r.stunnedPlayer = -1
       r.puppeteerInfo = null; r.positionSwaps = []; r.pendingAction = null
       r.pendingPositionSwap = null; r.superVitalsUsed = false
-log('─── Round ' + r.round + ' started! ' + r.players[0].name + "'s turn. ───")
+      r.effects = []; r.superVitalsAlert = null
+      log('─── Round ' + r.round + ' started! ' + r.players[0].name + "'s turn. ───")
       break
     }
+
     case 'END_GAME': {
       r.phase = 'ended'
       const w = [...r.players].sort((a, b) => b.score - a.score)[0]
       log('🏆 Game over! ' + w.name + ' wins with ' + w.score + ' pts!')
       break
     }
+
     case 'PLAY_AGAIN': {
       r.players = r.players.map(p => ({
         ...p, score: 0, chits: [], isShow: false, frozen: false, stunned: false,
@@ -459,6 +628,7 @@ log('─── Round ' + r.round + ' started! ' + r.players[0].name + "'s turn. 
       r.frozenPlayer = -1; r.stunnedPlayer = -1
       r.puppeteerInfo = null; r.positionSwaps = []; r.pendingAction = null
       r.pendingPositionSwap = null; r.superVitalsUsed = false
+      r.effects = []; r.superVitalsAlert = null
       break
     }
   }
