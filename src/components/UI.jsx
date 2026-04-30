@@ -39,14 +39,13 @@ export function HandCard({ chit, revealed, selected, onClick, arcIndex, totalCar
   const special = isSpecial(chit)
   const display = chitDisplay(chit)
   const isBlind = (stunned || frozen) && !isPuppetTarget
-  const hidden = isBlind || !revealed
-  const cardClass = `hand-card-flip ${hidden ? 'is-hidden' : 'is-revealed'}`
+  const showFront = !isBlind && revealed
 
   const mid   = (totalCards - 1) / 2
   const angle = (arcIndex - mid) * 5
   const lift  = Math.abs(arcIndex - mid) * 3
 
-  const style = isLargeHand ? {
+  const outerStyle = isLargeHand ? {
     width: 46, height: 64, borderRadius: 8,
     position: 'relative', flexShrink: 0,
     cursor: 'pointer', userSelect: 'none',
@@ -54,7 +53,7 @@ export function HandCard({ chit, revealed, selected, onClick, arcIndex, totalCar
     transition: 'transform .18s, box-shadow .18s',
     boxShadow: selected
       ? '0 0 0 3px #FFD600, 0 8px 20px rgba(0,0,0,.6)'
-      : special && revealed
+      : special && showFront
       ? '0 0 10px rgba(170,0,255,.4), 0 3px 8px rgba(0,0,0,.5)'
       : '0 3px 10px rgba(0,0,0,.55)',
     zIndex: selected ? 10 : 1,
@@ -68,52 +67,50 @@ export function HandCard({ chit, revealed, selected, onClick, arcIndex, totalCar
     transition: 'transform .18s, box-shadow .18s',
     boxShadow: selected
       ? '0 0 0 3px #FFD600, 0 12px 30px rgba(0,0,0,.6)'
-      : special && revealed
+      : special && showFront
       ? '0 0 12px rgba(170,0,255,.4), 0 4px 12px rgba(0,0,0,.5)'
       : '0 4px 14px rgba(0,0,0,.55)',
     marginLeft: arcIndex === 0 ? 0 : -12,
     zIndex: selected ? 10 : arcIndex,
   }
 
-  const baseFaceStyle = {
-    position: 'absolute', inset: 0, borderRadius: isLargeHand ? 7 : 9,
+  const faceBase = {
+    position: 'absolute', inset: 0,
+    borderRadius: isLargeHand ? 7 : 9,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     flexDirection: 'column', gap: 3,
-    border: `2px solid ${selected ? 'rgba(255,214,0,.6)' : special && revealed ? 'rgba(170,0,255,.5)' : 'rgba(255,255,255,.15)'}`,
     overflow: 'hidden',
   }
 
   return (
-    <div className={cardClass} style={style} onClick={onClick}>
-      <div className="hand-card-inner">
-        <div
-          className="hand-card-face hand-card-front"
-          style={{
-            ...baseFaceStyle,
-            background: special ? 'linear-gradient(135deg,#6a0dad,#9c27b0)' : '#fff',
-          }}
-        >
-          <span style={{ fontSize: isLargeHand ? 20 : 28, lineHeight:1 }}>{display}</span>
+    <div style={outerStyle} onClick={onClick} className={`hand-card ${showFront ? 'is-revealed' : 'is-hidden'}`}>
+      <div
+        className="hand-card-inner"
+        style={{ transitionDelay: showFront ? `${arcIndex * 50}ms` : '0ms' }}
+      >
+        <div className="hand-card-face hand-card-front" style={{
+          ...faceBase,
+          border: `2px solid ${selected ? 'rgba(255,214,0,.6)' : special ? 'rgba(170,0,255,.5)' : 'rgba(255,255,255,.15)'}`,
+          background: special ? 'linear-gradient(135deg,#6a0dad,#9c27b0)' : '#fff',
+        }}>
+          <span style={{ fontSize: isLargeHand ? 20 : 28, lineHeight: 1 }}>{display}</span>
           {special && (
-            <span style={{ fontSize:7, fontWeight:900, color:'rgba(255,255,255,.8)', textTransform:'uppercase', letterSpacing:.4 }}>
+            <span style={{ fontSize: 7, fontWeight: 900, color: 'rgba(255,255,255,.8)', textTransform: 'uppercase', letterSpacing: .4 }}>
               {chit.name}
             </span>
           )}
         </div>
-
-        <div
-          className="hand-card-face hand-card-back"
-          style={{
-            ...baseFaceStyle,
-            background:'linear-gradient(135deg,#1a237e 0%,#283593 50%,#1a237e 100%)',
-          }}
-        >
+        <div className="hand-card-face hand-card-back" style={{
+          ...faceBase,
+          border: '2px solid rgba(255,255,255,.15)',
+          background: 'linear-gradient(135deg,#1a237e 0%,#283593 50%,#1a237e 100%)',
+        }}>
           <div style={{
-            position:'absolute', inset:5, borderRadius:6,
-            backgroundImage:'radial-gradient(circle,rgba(255,255,255,.15) 1.5px,transparent 1.5px)',
-            backgroundSize:'8px 8px',
+            position: 'absolute', inset: 5, borderRadius: 6,
+            backgroundImage: 'radial-gradient(circle,rgba(255,255,255,.15) 1.5px,transparent 1.5px)',
+            backgroundSize: '8px 8px',
           }}/>
-          <span style={{ fontSize: isLargeHand ? 16 : 22, fontFamily:"'Fredoka One',cursive", color:'rgba(255,255,255,.5)', position:'relative' }}>
+          <span style={{ fontSize: isLargeHand ? 16 : 22, fontFamily: "'Fredoka One',cursive", color: 'rgba(255,255,255,.5)', position: 'relative' }}>
             {stunned ? '💥' : frozen ? '🧊' : '?'}
           </span>
         </div>
