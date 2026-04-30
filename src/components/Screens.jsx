@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { WsStatus } from './UI.jsx'
 import { AVATAR_COLORS, SEAT_COLORS, SPECIALS } from '../utils/game.js'
 import { initials, copyToClipboard } from '../utils/helpers.js'

@@ -203,8 +203,8 @@ export function HandHud({
   if (amIPuppeteer)                         hint = '🎭 You are puppeteering — use the control panel'
   else if (amIStunned && isMyTurn)          hint = '💥 Stunned! Pass a chit blind!'
   else if (mustPassNormal)                  hint = '✨ Special used — pass a normal chit'
-  else if (isMyTurn && phase==='playing')   hint = 'Tap to reveal · Select to pass'
-  else if (phase==='playing')               hint = 'Tap cards to peek 👀'
+  else if (isMyTurn && phase==='playing')   hint = 'Tap once to reveal all · Select to pass'
+  else if (phase==='playing')               hint = 'Tap once to reveal all 👀'
 
   return (
     <div className="hand-hud">
@@ -327,12 +327,12 @@ export function RoundEndControls({ isHost, onNextRound, onEndGame }) {
 // ── Round Result Modal ────────────────────────────────────────
 export function RoundResultModal({ room }) {
   if (!room?.roundResults?.length) return null
+
   return (
     <div style={{
       position:'fixed', inset:0, zIndex:35,
       display:'flex', alignItems:'center', justifyContent:'center',
-      padding:'1rem',
-      background:'rgba(0,0,0,.76)', backdropFilter:'blur(8px)',
+      padding:'1rem', background:'rgba(0,0,0,.76)', backdropFilter:'blur(8px)',
       overflowY:'auto',
     }}>
       <div style={{
@@ -354,6 +354,7 @@ export function RoundResultModal({ room }) {
 
         {room.roundResults.map(result => {
           const color = SEAT_COLORS[result.playerIdx % SEAT_COLORS.length]
+          const chits = result.chits ?? []
           return (
             <div key={result.playerIdx} style={{
               marginBottom:10, padding:'12px 14px', borderRadius:12,
@@ -361,33 +362,27 @@ export function RoundResultModal({ room }) {
               border:`1px solid ${result.isShow ? 'rgba(255,214,0,.35)' : 'rgba(255,255,255,.08)'}`,
             }}>
               <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
-                <div className="avatar" style={{
-                  background:`${color}22`, color, border:`1.5px solid ${color}`,
-                  width:26, height:26, fontSize:10,
-                }}>
+                <div className="avatar" style={{ background:`${color}22`, color, border:`1.5px solid ${color}`, width:26, height:26, fontSize:10 }}>
                   {initials(result.name)}
                 </div>
-                <span style={{ flex:1, fontWeight:900, fontSize:13, color:'#fff' }}>{result.name}</span>
-                {result.isShow && <span style={{ fontSize:11, color:'#FFD600', fontWeight:900 }}>🔥 SHOW!</span>}
-                {result.roundPoints > 0 && (
-                  <span style={{ fontFamily:"'Fredoka One',cursive", fontSize:16, color:'#FFD600' }}>
-                    +{result.roundPoints}
-                  </span>
+                <div style={{ flex:1, color:'#fff', fontWeight:900, fontSize:13 }}>{result.name}</div>
+                {result.isShow && <div style={{ color:'#FFD600', fontWeight:900, fontSize:12 }}>SHOW</div>}
+                {typeof result.roundPoints === 'number' && (
+                  <div style={{ color:'#43A047', fontWeight:900, fontSize:12 }}>+{result.roundPoints}</div>
                 )}
               </div>
-              <div style={{ display:'flex', flexWrap:'wrap', gap:5 }}>
-                {result.chits.map((chit, ci) => {
-                  const sp = isSpecial(chit)
+              <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                {chits.map((chit, i) => {
+                  const special = isSpecial(chit)
                   return (
-                    <div key={ci} style={{
-                      width:40, height:56, borderRadius:7,
-                      display:'flex', alignItems:'center', justifyContent:'center',
-                      flexDirection:'column', gap:2,
-                      background: sp ? 'linear-gradient(135deg,#6a0dad,#9c27b0)' : '#fff',
-                      border: sp ? '1.5px solid rgba(170,0,255,.5)' : '1.5px solid rgba(200,200,200,.35)',
+                    <div key={i} style={{
+                      width:34, height:46, borderRadius:7,
+                      display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column',
+                      background: special ? 'linear-gradient(135deg,#6a0dad,#9c27b0)' : '#fff',
+                      border:'1px solid rgba(255,255,255,.18)',
+                      boxShadow:'0 2px 8px rgba(0,0,0,.35)',
                     }}>
-                      <span style={{ fontSize:17, lineHeight:1 }}>{chitDisplay(chit)}</span>
-                      {sp && <span style={{ fontSize:5.5, fontWeight:900, color:'rgba(255,255,255,.8)', textTransform:'uppercase' }}>{chit.name}</span>}
+                      <span style={{ fontSize:18, lineHeight:1 }}>{chitDisplay(chit)}</span>
                     </div>
                   )
                 })}
