@@ -1,11 +1,38 @@
 // show-3d/src/hooks/useWebSocket.js
-// Removed old relay JOIN_ROOM on open — server now uses CREATE_ROOM / JOIN_ROOM messages
-// sent explicitly from useGame. Reconnect and send functionality preserved.
+// Auto-rejoin on reconnect using localStorage saved session
 
 import { useRef, useCallback } from 'react'
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001'
 
+// ── localStorage helpers ──────────────────────────────────────
+const LS_ME   = 'show_me'
+const LS_ROOM = 'show_room'
+
+export function saveSession(me, roomCode) {
+  try {
+    localStorage.setItem(LS_ME,   JSON.stringify(me))
+    localStorage.setItem(LS_ROOM, roomCode)
+  } catch {}
+}
+
+export function clearSession() {
+  try {
+    localStorage.removeItem(LS_ME)
+    localStorage.removeItem(LS_ROOM)
+  } catch {}
+}
+
+export function loadSession() {
+  try {
+    const me       = JSON.parse(localStorage.getItem(LS_ME) || 'null')
+    const roomCode = localStorage.getItem(LS_ROOM)
+    if (me?.id && me?.name && roomCode) return { me, roomCode }
+  } catch {}
+  return null
+}
+
+// ── Hook ──────────────────────────────────────────────────────
 export function useWebSocket() {
   const wsRef          = useRef(null)
   const onMessageRef   = useRef(null)
@@ -13,7 +40,6 @@ export function useWebSocket() {
   const reconnTimerRef = useRef(null)
   const statusRef      = useRef('disconnected')
   const statusCbRef    = useRef(null)
-  // Queued message to send as soon as the socket opens (used for CREATE_ROOM / JOIN_ROOM)
   const pendingMsgRef  = useRef(null)
 
   const setStatus = (s) => {
@@ -29,7 +55,7 @@ export function useWebSocket() {
 
     ws.onopen = () => {
       setStatus('connected')
-      // Send the queued initial message (CREATE_ROOM or JOIN_ROOM) if present
+      // Send initial message if queued (CREATE_ROOM / JOIN_ROOM)
       if (pendingMsgRef.current) {
         ws.send(JSON.stringify(pendingMsgRef.current))
         pendingMsgRef.current = null
@@ -46,7 +72,19 @@ export function useWebSocket() {
     ws.onclose = () => {
       setStatus('disconnected')
       if (!manualCloseRef.current) {
-        reconnTimerRef.current = setTimeout(open, 2000)
+        reconnTimerRef.current = setTimeout(() => {
+          // On reconnect — check localStorage for saved session
+          // and automatically rejoin the room
+          const session = loadSession()
+          if (session) {
+            pendingMsgRef.current = {
+              type:     'JOIN_ROOM',
+              roomCode: session.roomCode,
+              player:   session.me,
+            }
+          }
+          open()
+        }, 2000)
       }
     }
 
@@ -55,10 +93,7 @@ export function useWebSocket() {
 
   /**
    * connect(onMessage, onStatusChange, initialMsg?)
-   *
-   * initialMsg is sent immediately when the socket opens.
-   * For CREATE_ROOM it should be { type:'CREATE_ROOM', player }
-   * For JOIN_ROOM  it should be { type:'JOIN_ROOM', roomCode, player }
+   * initialMsg is sent immediately on socket open.
    */
   const connect = useCallback((onMessage, onStatusChange, initialMsg) => {
     onMessageRef.current   = onMessage
