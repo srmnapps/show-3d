@@ -1,3 +1,9 @@
+// show-3d/src/components/Screens.jsx
+// Added: CreateJoinScreen now has Private/Public choice
+// Added: PublicLobbyScreen — browse and join public rooms
+// Added: LobbyScreen gets visibility toggle for host
+// Everything else unchanged
+
 import { useEffect, useState } from 'react'
 import { WsStatus } from './UI.jsx'
 import { AVATAR_COLORS, SEAT_COLORS, SPECIALS } from '../utils/game.js'
@@ -158,7 +164,8 @@ export function LandingPage({ onPlay }) {
 }
 
 // ── Create / Join choice ──────────────────────────────────────
-export function CreateJoinScreen({ name, onCreate, onGoJoin, onBack }) {
+// Now has 4 options: Private Create, Public Create, Join with Code, Browse Public
+export function CreateJoinScreen({ name, onCreate, onCreatePublic, onGoJoin, onBrowse, onBack }) {
   return (
     <div className="join-wrap">
       <div className="join-inner">
@@ -166,18 +173,109 @@ export function CreateJoinScreen({ name, onCreate, onGoJoin, onBack }) {
           <div className="logo-title" style={{ fontSize:'3.5rem' }}>SHOW</div>
           <div className="logo-sub">Welcome, <strong style={{ color:'#fff' }}>{name}</strong>!</div>
         </div>
+
         <div className="name-entry">
-          <button className="btn btn-green" style={{ width:'100%', marginBottom:12, fontSize:16 }} onClick={onCreate}>
-            ✦ Create Room
+
+          {/* Private section */}
+          <div style={sectionLabel}>🔒 Private Game</div>
+          <button className="btn btn-green" style={{ width:'100%', marginBottom:8, fontSize:15 }} onClick={onCreate}>
+            ✦ Create Private Room
           </button>
+          <button className="btn btn-blue" style={{ width:'100%', marginBottom:16, fontSize:15 }} onClick={onGoJoin}>
+            🚪 Join with Code
+          </button>
+
           <div className="divider">or</div>
-          <button className="btn btn-blue" style={{ width:'100%', fontSize:15 }} onClick={onGoJoin}>
-            🚪 Join a Room
+
+          {/* Public section */}
+          <div style={sectionLabel}>🌐 Public Game</div>
+          <button className="btn btn-green" style={{ width:'100%', marginBottom:8, fontSize:15, background:'#7B1FA2' }} onClick={onCreatePublic}>
+            ✦ Create Public Room
           </button>
-          <button className="btn btn-ghost" style={{ width:'100%', marginTop:10 }} onClick={onBack}>
+          <button className="btn btn-blue" style={{ width:'100%', marginBottom:16, fontSize:15, background:'#0288D1' }} onClick={onBrowse}>
+            🔍 Browse Public Rooms
+          </button>
+
+          <button className="btn btn-ghost" style={{ width:'100%', marginTop:4 }} onClick={onBack}>
             ← Back
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Public Lobby Browser ──────────────────────────────────────
+export function PublicLobbyScreen({ name, publicRooms, onJoin, onRefresh, onBack, loading }) {
+  // Auto-refresh every 5 seconds
+  useEffect(() => {
+    onRefresh()
+    const t = setInterval(onRefresh, 5000)
+    return () => clearInterval(t)
+  }, [onRefresh])
+
+  function timeAgo(ts) {
+    const s = Math.floor((Date.now() - ts) / 1000)
+    if (s < 60)  return `${s}s ago`
+    if (s < 3600) return `${Math.floor(s/60)}m ago`
+    return `${Math.floor(s/3600)}h ago`
+  }
+
+  return (
+    <div className="join-wrap">
+      <div className="join-inner" style={{ maxWidth: 560 }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:20 }}>
+          <div>
+            <div className="logo-title" style={{ fontSize:'2.5rem', lineHeight:1 }}>SHOW</div>
+            <div className="logo-sub" style={{ marginTop:2 }}>🌐 Public Rooms</div>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onRefresh} title="Refresh">
+            🔄 Refresh
+          </button>
+        </div>
+
+        {/* Room list */}
+        <div style={{ display:'flex', flexDirection:'column', gap:10, minHeight:200 }}>
+          {loading && publicRooms.length === 0 && (
+            <div style={emptyStyle}>⏳ Loading rooms…</div>
+          )}
+          {!loading && publicRooms.length === 0 && (
+            <div style={emptyStyle}>
+              <div style={{ fontSize:40, marginBottom:8 }}>🏜️</div>
+              <div>No public rooms open right now.</div>
+              <div style={{ fontSize:12, marginTop:4, opacity:.6 }}>Be the first — create a public room!</div>
+            </div>
+          )}
+          {publicRooms.map(r => (
+            <div key={r.code} style={roomCardStyle}>
+              {/* Left info */}
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+                  <span style={{ fontWeight:900, fontSize:15, color:'#fff' }}>{r.hostName}'s Room</span>
+                  <span style={modeBadge(r.mode)}>{r.mode === 'special' ? '✨ Special' : '🎯 Normal'}</span>
+                </div>
+                <div style={{ display:'flex', gap:12, fontSize:12, color:'rgba(255,255,255,.55)', flexWrap:'wrap' }}>
+                  <span>🔑 {r.code}</span>
+                  <span>👥 {r.playerCount}/{r.maxPlayers} players</span>
+                  <span>🕐 {timeAgo(r.createdAt)}</span>
+                </div>
+              </div>
+              {/* Join button */}
+              <button
+                className="btn btn-blue"
+                style={{ flexShrink:0, fontSize:13, padding:'6px 16px' }}
+                disabled={r.playerCount >= r.maxPlayers}
+                onClick={() => onJoin(r.code)}
+              >
+                {r.playerCount >= r.maxPlayers ? '🔴 Full' : '➜ Join'}
+              </button>
+            </div>
+          ))}
+        </div>
+
+        <button className="btn btn-ghost" style={{ width:'100%', marginTop:16 }} onClick={onBack}>
+          ← Back
+        </button>
       </div>
     </div>
   )
@@ -202,7 +300,7 @@ export function JoinScreen({ name, onJoin, onBack, errorMsg }) {
         <div className="name-entry">
           <div className="input-group">
             <label className="input-label">Room Code</label>
-            <input className="input input-code" placeholder="SHOW-XXXX"
+            <input className="input input-code" placeholder="XXXX"
               value={code} maxLength={9}
               onChange={e => setCode(e.target.value.toUpperCase())}
               onKeyDown={e => { if (e.key==='Enter') go() }}
@@ -221,7 +319,7 @@ export function JoinScreen({ name, onJoin, onBack, errorMsg }) {
 }
 
 // ── Lobby Screen ──────────────────────────────────────────────
-export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSetMode, setHandSetup, setEnabledSpecials }) {
+export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSetMode, setHandSetup, setEnabledSpecials, isPublic, onToggleVisibility }) {
   const [copied, setCopied] = useState(false)
   const [specsOpen, setSpecsOpen] = useState(() => window.innerWidth >= 900)
 
@@ -231,8 +329,8 @@ export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSe
     setTimeout(() => setCopied(false), 1600)
   }
 
-  const mode           = room.mode ?? 'special'
-  const settings       = room.settings ?? { normalCount: 4, specialCount: 2, enabledSpecials: SPECIALS.map(s => s.type) }
+  const mode            = room.mode ?? 'special'
+  const settings        = room.settings ?? { normalCount: 4, specialCount: 2, enabledSpecials: SPECIALS.map(s => s.type) }
   const enabledSpecials = settings.enabledSpecials ?? SPECIALS.map(s => s.type)
 
   return (
@@ -242,7 +340,25 @@ export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSe
         {/* Header */}
         <div className="lobby-header">
           <h2 className="lobby-title">🏠 Lobby</h2>
-          <WsStatus status={wsStatus} />
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            {/* Visibility badge + toggle (host only) */}
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <span style={visibilityBadge(isPublic)}>
+                {isPublic ? '🌐 Public' : '🔒 Private'}
+              </span>
+              {isHost && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={onToggleVisibility}
+                  title={isPublic ? 'Make Private' : 'Make Public'}
+                  style={{ fontSize:11, padding:'3px 8px' }}
+                >
+                  Switch
+                </button>
+              )}
+            </div>
+            <WsStatus status={wsStatus} />
+          </div>
         </div>
 
         {/* Two-column content grid */}
@@ -251,7 +367,9 @@ export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSe
           {/* Left: Room code + Players */}
           <div className="lobby-left">
             <div className="lobby-code-box">
-              <div className="section-label" style={{ marginBottom: 6 }}>Share this code!</div>
+              <div className="section-label" style={{ marginBottom: 6 }}>
+                {isPublic ? 'Room Code (public)' : 'Share this code!'}
+              </div>
               <div className="room-code-display">{room.code}</div>
               <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={doCopy}>
                 {copied ? '✓ Copied!' : '⎘ Copy Code'}
@@ -366,7 +484,7 @@ export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSe
           </p>
         )}
 
-        {/* Action bar — sticky on mobile, inline on desktop */}
+        {/* Action bar */}
         <div className="lobby-actions">
           <button className="btn btn-green btn-lg lobby-start-btn"
             disabled={!isHost || room.players.length < 2} onClick={onStart}>
@@ -379,3 +497,47 @@ export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSe
     </div>
   )
 }
+
+// ── Style helpers ─────────────────────────────────────────────
+const sectionLabel = {
+  fontSize: 11, fontWeight: 800, textTransform: 'uppercase',
+  color: 'rgba(255,255,255,.4)', letterSpacing: 1,
+  marginBottom: 8, marginTop: 4,
+}
+
+const roomCardStyle = {
+  display:      'flex',
+  alignItems:   'center',
+  gap:          12,
+  padding:      '12px 14px',
+  background:   'rgba(255,255,255,.06)',
+  border:       '1px solid rgba(255,255,255,.1)',
+  borderRadius: 12,
+}
+
+const emptyStyle = {
+  textAlign:  'center',
+  padding:    '40px 20px',
+  color:      'rgba(255,255,255,.4)',
+  fontSize:   14,
+}
+
+const modeBadge = (mode) => ({
+  fontSize:     10,
+  fontWeight:   800,
+  padding:      '2px 8px',
+  borderRadius: 20,
+  background:   mode === 'special' ? 'rgba(170,0,255,.2)' : 'rgba(30,136,229,.2)',
+  color:        mode === 'special' ? '#CC44FF' : '#42A5F5',
+  border:       `1px solid ${mode === 'special' ? 'rgba(170,0,255,.3)' : 'rgba(30,136,229,.3)'}`,
+})
+
+const visibilityBadge = (isPublic) => ({
+  fontSize:     11,
+  fontWeight:   800,
+  padding:      '3px 10px',
+  borderRadius: 20,
+  background:   isPublic ? 'rgba(67,160,71,.2)' : 'rgba(255,255,255,.08)',
+  color:        isPublic ? '#81C784' : 'rgba(255,255,255,.5)',
+  border:       `1px solid ${isPublic ? 'rgba(67,160,71,.3)' : 'rgba(255,255,255,.15)'}`,
+})

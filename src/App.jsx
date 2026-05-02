@@ -6,7 +6,9 @@ import {
   LoadingOverlay, RoundResultModal,
 } from './components/UI.jsx'
 import { SpecialModalManager } from './components/SpecialModals.jsx'
-import { LandingPage, CreateJoinScreen, JoinScreen, LobbyScreen } from './components/Screens.jsx'
+import {
+  LandingPage, CreateJoinScreen, JoinScreen, LobbyScreen, PublicLobbyScreen,
+} from './components/Screens.jsx'
 
 const GAME_PHASES = [
   'playing','showWindow','afterShow','roundEnd',
@@ -25,6 +27,8 @@ export default function App() {
     myRevealed, countdown, canJoinShow, hasJoinedShow, canCallShow,
     specialAction, mustPassNormal, stunFlash, isStunned, amIStunned,
     amIPuppeteer, amIPuppeted, puppetTarget,
+    // Public/private
+    publicRooms, isPublic, toggleVisibility, listRooms, connectForBrowsing,
     createRoom, joinRoom, startGame, setMode, setHandSetup, setEnabledSpecials,
     revealChit, onChitClick, passChit, useSpecial, cancelSpecial,
     pickTarget, revealedSnatchPick, nukePickCard, dismissVitals, blindSnatchPickCard,
@@ -34,7 +38,7 @@ export default function App() {
 
   const phase = room?.phase
 
-  // Screen routing
+  // Screen routing based on game phase
   useEffect(() => {
     if (!phase) return
     if (phase === 'lobby') setScreen('lobby')
@@ -47,30 +51,41 @@ export default function App() {
     ? room?.players[room?.puppeteerInfo?.puppeteerIdx]?.name ?? 'Someone'
     : ''
 
-  // ── Navigation handlers ─────────────────────────────────
+  // ── Navigation handlers ──────────────────────────────────
   function onPlay(name) { setPlayerName(name); setScreen('createjoin') }
 
+  // Private room
   async function onCreate() {
-    await createRoom(playerName)
-    setScreen('lobby')
+    await createRoom(playerName, false)
+  }
+
+  // Public room
+  async function onCreatePublic() {
+    await createRoom(playerName, true)
+  }
+
+  // Browse public rooms — connect WS just for browsing
+  function onBrowse() {
+    connectForBrowsing(playerName)
+    setScreen('browse')
   }
 
   function onGoJoin() { setScreen('join') }
 
   async function onJoin(code, done) {
-    try { await joinRoom(playerName, code); setScreen('lobby') }
+    try { await joinRoom(playerName, code) }
     catch {} finally { done?.() }
   }
 
   function onLeave() { leaveRoom(); setScreen('landing') }
   function onBack()  { setScreen(screen === 'join' ? 'createjoin' : 'landing') }
 
-  // ── Pass handler ────────────────────────────────────────
+  // ── Pass handler ─────────────────────────────────────────
   const handlePass = useCallback((chitIdx, forActing = false) => {
     passChit(chitIdx, forActing)
   }, [passChit])
 
-  // ── Puppeteer chit click (on target's hand) ─────────────
+  // ── Puppeteer chit click (on target's hand) ──────────────
   const handlePuppetChitClick = useCallback((i) => {
     onChitClick(i, true)
   }, [onChitClick])
@@ -87,8 +102,9 @@ export default function App() {
 
       {/* Global loading overlay */}
       {loading && <LoadingOverlay message={
-        screen === 'join' ? 'Joining room…'
-        : screen === 'lobby' ? 'Starting game…'
+        screen === 'join'   ? 'Joining room…'
+        : screen === 'lobby'  ? 'Starting game…'
+        : screen === 'browse' ? 'Loading rooms…'
         : 'Please wait…'
       } />}
 
@@ -102,12 +118,14 @@ export default function App() {
           <CreateJoinScreen
             name={playerName}
             onCreate={onCreate}
+            onCreatePublic={onCreatePublic}
             onGoJoin={onGoJoin}
+            onBrowse={onBrowse}
             onBack={() => setScreen('landing')}
           />
         )}
 
-        {/* ── Join ── */}
+        {/* ── Join with code ── */}
         {screen === 'join' && (
           <JoinScreen
             name={playerName}
@@ -117,12 +135,26 @@ export default function App() {
           />
         )}
 
+        {/* ── Browse public rooms ── */}
+        {screen === 'browse' && (
+          <PublicLobbyScreen
+            name={playerName}
+            publicRooms={publicRooms}
+            onJoin={(code) => onJoin(code, () => {})}
+            onRefresh={listRooms}
+            onBack={() => setScreen('createjoin')}
+            loading={loading}
+          />
+        )}
+
         {/* ── Lobby ── */}
         {screen === 'lobby' && room && (
           <LobbyScreen
             room={room} me={me} isHost={isHost} wsStatus={wsStatus}
             onStart={startGame} onLeave={onLeave} onSetMode={setMode}
             setHandSetup={setHandSetup} setEnabledSpecials={setEnabledSpecials}
+            isPublic={isPublic}
+            onToggleVisibility={toggleVisibility}
           />
         )}
 
