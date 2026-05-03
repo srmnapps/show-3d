@@ -567,8 +567,20 @@ export function useGame() {
   }, [sendAction])
 
   // ── Bot management ────────────────────────────────────────
-  const addBot    = useCallback(() => sendAction({ type:'ADD_BOT' }), [sendAction])
-  const removeBot = useCallback((targetIdx) => sendAction({ type:'REMOVE_BOT', targetIdx }), [sendAction])
+  // These are lobby-only actions — sent as top-level WS messages (not ACTION).
+  const addBot = useCallback(() => {
+    const r = roomRef.current; const m = meRef.current
+    if (!r?.code || !m?.id) return
+    const ok = send({ type: 'ADD_BOT', roomCode: r.code, playerId: m.id })
+    if (!ok) setErrorMsg('Disconnected. Reconnecting…')
+  }, [send])
+
+  const removeBot = useCallback((targetIdx) => {
+    const r = roomRef.current; const m = meRef.current
+    if (!r?.code || !m?.id) return
+    const ok = send({ type: 'REMOVE_BOT', roomCode: r.code, playerId: m.id, targetIdx })
+    if (!ok) setErrorMsg('Disconnected. Reconnecting…')
+  }, [send])
 
   return {
     me, room, logs, myIdx, selectedChit, setSelectedChit,

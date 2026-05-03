@@ -1,3 +1,4 @@
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { AVATAR_COLORS, MEDALS, SEAT_COLORS, isSpecial, chitDisplay } from '../utils/game.js'
 import { initials } from '../utils/helpers.js'
 
@@ -34,56 +35,99 @@ export function WsStatus({ status }) {
   )
 }
 
-// ── Hand card (fan arc layout) ────────────────────────────────
-export function HandCard({ chit, revealed, selected, onClick, arcIndex, totalCards, stunned, frozen, isLargeHand }) {
-  const special = isSpecial(chit)
-  const display = chitDisplay(chit)
-  const isBlind = stunned || frozen
+// ── Hand card ────────────────────────────────────────────────
+// isStackedLayer = true → fan style but at a smaller size (for 8+4 two-layer hand)
+// isLargeHand    = true → flat compact grid style (for 7-8 card hand)
+// normal (both false) → premium full-size fan
+export function HandCard({
+  chit, revealed, selected, onClick,
+  arcIndex, totalCards,
+  stunned, frozen,
+  isLargeHand,
+  isStackedLayer,
+  isDragging,
+}) {
+  const special   = isSpecial(chit)
+  const display   = chitDisplay(chit)
+  const isBlind   = stunned || frozen
   const showFront = !isBlind && revealed
 
   const mid   = (totalCards - 1) / 2
   const angle = (arcIndex - mid) * 5
   const lift  = Math.abs(arcIndex - mid) * 3
 
-  const outerStyle = isLargeHand ? {
-    width: 46, height: 64, borderRadius: 8,
-    position: 'relative', flexShrink: 0,
-    cursor: 'pointer', userSelect: 'none',
-    transform: selected ? 'translateY(-10px) scale(1.08)' : 'none',
-    transition: 'transform .18s, box-shadow .18s',
-    boxShadow: selected
-      ? '0 0 0 3px #FFD600, 0 8px 20px rgba(0,0,0,.6)'
-      : special && showFront
-      ? '0 0 10px rgba(170,0,255,.4), 0 3px 8px rgba(0,0,0,.5)'
-      : '0 3px 10px rgba(0,0,0,.55)',
-    zIndex: selected ? 10 : 1,
-  } : {
-    width: 58, height: 82, borderRadius: 10,
-    position: 'relative', flexShrink: 0,
-    cursor: 'pointer', userSelect: 'none',
-    transform: selected
-      ? 'perspective(500px) rotateX(5deg) translateY(-28px) rotate(0deg) scale(1.09)'
-      : `perspective(500px) rotateX(5deg) rotate(${angle}deg) translateY(${lift}px)`,
-    transition: 'transform .18s, box-shadow .18s',
-    boxShadow: selected
-      ? '0 0 0 3px #FFD600, 0 12px 30px rgba(0,0,0,.6)'
-      : special && showFront
-      ? '0 0 12px rgba(170,0,255,.4), 0 4px 12px rgba(0,0,0,.5)'
-      : '0 4px 14px rgba(0,0,0,.55)',
-    marginLeft: arcIndex === 0 ? 0 : -12,
-    zIndex: selected ? 10 : arcIndex,
+  let outerStyle
+
+  if (isStackedLayer) {
+    // Fan style identical to normal, just smaller card dimensions
+    outerStyle = {
+      width: 52, height: 74, borderRadius: 9,
+      position: 'relative', flexShrink: 0,
+      cursor: isDragging ? 'grabbing' : 'grab',
+      userSelect: 'none',
+      transform: selected
+        ? 'perspective(500px) rotateX(5deg) translateY(-22px) rotate(0deg) scale(1.09)'
+        : `perspective(500px) rotateX(5deg) rotate(${angle}deg) translateY(${lift}px)`,
+      transition: isDragging ? 'none' : 'transform .18s, box-shadow .18s',
+      opacity: isDragging ? 0.4 : 1,
+      boxShadow: selected
+        ? '0 0 0 3px #FFD600, 0 10px 24px rgba(0,0,0,.6)'
+        : special && showFront
+        ? '0 0 12px rgba(170,0,255,.4), 0 4px 12px rgba(0,0,0,.5)'
+        : '0 4px 14px rgba(0,0,0,.55)',
+      marginLeft: arcIndex === 0 ? 0 : -10,
+      zIndex: isDragging ? 50 : selected ? 10 : arcIndex,
+    }
+  } else if (isLargeHand) {
+    outerStyle = {
+      width: 46, height: 64, borderRadius: 8,
+      position: 'relative', flexShrink: 0,
+      cursor: 'pointer', userSelect: 'none',
+      transform: selected ? 'translateY(-10px) scale(1.08)' : 'none',
+      transition: 'transform .18s, box-shadow .18s',
+      boxShadow: selected
+        ? '0 0 0 3px #FFD600, 0 8px 20px rgba(0,0,0,.6)'
+        : special && showFront
+        ? '0 0 10px rgba(170,0,255,.4), 0 3px 8px rgba(0,0,0,.5)'
+        : '0 3px 10px rgba(0,0,0,.55)',
+      zIndex: selected ? 10 : 1,
+    }
+  } else {
+    // Normal premium fan (up to 6 cards)
+    outerStyle = {
+      width: 58, height: 82, borderRadius: 10,
+      position: 'relative', flexShrink: 0,
+      cursor: 'pointer', userSelect: 'none',
+      transform: selected
+        ? 'perspective(500px) rotateX(5deg) translateY(-28px) rotate(0deg) scale(1.09)'
+        : `perspective(500px) rotateX(5deg) rotate(${angle}deg) translateY(${lift}px)`,
+      transition: 'transform .18s, box-shadow .18s',
+      boxShadow: selected
+        ? '0 0 0 3px #FFD600, 0 12px 30px rgba(0,0,0,.6)'
+        : special && showFront
+        ? '0 0 12px rgba(170,0,255,.4), 0 4px 12px rgba(0,0,0,.5)'
+        : '0 4px 14px rgba(0,0,0,.55)',
+      marginLeft: arcIndex === 0 ? 0 : -12,
+      zIndex: selected ? 10 : arcIndex,
+    }
   }
 
+  const borderR   = isStackedLayer ? 8 : isLargeHand ? 7 : 9
+  const emojiSize = isStackedLayer ? 22 : isLargeHand ? 20 : 28
+  const backSize  = isStackedLayer ? 18 : isLargeHand ? 16 : 22
+
   const faceBase = {
-    position: 'absolute', inset: 0,
-    borderRadius: isLargeHand ? 7 : 9,
+    position: 'absolute', inset: 0, borderRadius: borderR,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
-    flexDirection: 'column', gap: 3,
-    overflow: 'hidden',
+    flexDirection: 'column', gap: 3, overflow: 'hidden',
   }
 
   return (
-    <div style={outerStyle} onClick={onClick} className={`hand-card ${showFront ? 'is-revealed' : 'is-hidden'}`}>
+    <div
+      style={outerStyle}
+      onClick={onClick}
+      className={`hand-card ${showFront ? 'is-revealed' : 'is-hidden'}`}
+    >
       <div
         className="hand-card-inner"
         style={{ transitionDelay: showFront ? `${arcIndex * 50}ms` : '0ms' }}
@@ -93,7 +137,7 @@ export function HandCard({ chit, revealed, selected, onClick, arcIndex, totalCar
           border: `2px solid ${selected ? 'rgba(255,214,0,.6)' : special ? 'rgba(170,0,255,.5)' : 'rgba(255,255,255,.15)'}`,
           background: special ? 'linear-gradient(135deg,#6a0dad,#9c27b0)' : '#fff',
         }}>
-          <span style={{ fontSize: isLargeHand ? 20 : 28, lineHeight: 1 }}>{display}</span>
+          <span style={{ fontSize: emojiSize, lineHeight: 1 }}>{display}</span>
           {special && (
             <span style={{ fontSize: 7, fontWeight: 900, color: 'rgba(255,255,255,.8)', textTransform: 'uppercase', letterSpacing: .4 }}>
               {chit.name}
@@ -110,7 +154,7 @@ export function HandCard({ chit, revealed, selected, onClick, arcIndex, totalCar
             backgroundImage: 'radial-gradient(circle,rgba(255,255,255,.15) 1.5px,transparent 1.5px)',
             backgroundSize: '8px 8px',
           }}/>
-          <span style={{ fontSize: isLargeHand ? 16 : 22, fontFamily: "'Fredoka One',cursive", color: 'rgba(255,255,255,.5)', position: 'relative' }}>
+          <span style={{ fontSize: backSize, fontFamily: "'Fredoka One',cursive", color: 'rgba(255,255,255,.5)', position: 'relative' }}>
             {stunned ? '💥' : frozen ? '🧊' : '?'}
           </span>
         </div>
@@ -148,22 +192,20 @@ function getSeatPos(relIdx, total) {
   return (seats[total]??seats[2])[relIdx] ?? { bottom:'13%', left:'50%', transform:'translateX(-50%)' }
 }
 
-// Small inline badge helper
 function Badge({ label, bg, color }) {
   return (
     <span style={{
       fontSize: 8, fontWeight: 900, letterSpacing: .5,
       padding: '1px 5px', borderRadius: 6,
-      background: bg, color,
-      textTransform: 'uppercase',
+      background: bg, color, textTransform: 'uppercase',
     }}>{label}</span>
   )
 }
 
 export function PlayerSeat({ player, idx, myIdx, totalPlayers, isActive, isFrozen, isStunned, isMe }) {
-  const relIdx = (idx - myIdx + totalPlayers) % totalPlayers
-  const pos    = getSeatPos(relIdx, totalPlayers)
-  const color  = SEAT_COLORS[idx % SEAT_COLORS.length]
+  const relIdx    = (idx - myIdx + totalPlayers) % totalPlayers
+  const pos       = getSeatPos(relIdx, totalPlayers)
+  const color     = SEAT_COLORS[idx % SEAT_COLORS.length]
   const specCount = player.chits.filter(c => isSpecial(c)).length
 
   let plateClass = 'seat-plate'
@@ -187,8 +229,8 @@ export function PlayerSeat({ player, idx, myIdx, totalPlayers, isActive, isFroze
         {isFrozen  && <span style={{ fontSize:13 }}>🧊</span>}
         {isStunned && <span style={{ fontSize:13 }}>💥</span>}
         {player.isShow && <span style={{ fontSize:13 }}>🔥</span>}
-        {player.isBot    && <Badge label="BOT"     bg="rgba(30,136,229,.3)"  color="#90CAF9" />}
-        {player.botActive && <Badge label="AUTO"   bg="rgba(67,160,71,.3)"   color="#A5D6A7" />}
+        {player.isBot    && <Badge label="BOT"  bg="rgba(30,136,229,.3)" color="#90CAF9" />}
+        {player.botActive && <Badge label="AUTO" bg="rgba(67,160,71,.3)"  color="#A5D6A7" />}
         {player.online === false && <Badge label="OFF" bg="rgba(229,57,53,.3)" color="#EF9A9A" />}
       </div>
       <div style={{ display:'flex', gap:5, alignItems:'center', padding:'3px 10px', borderRadius:12, background:'rgba(0,0,0,.55)', border:`1px solid ${color}33` }}>
@@ -200,6 +242,200 @@ export function PlayerSeat({ player, idx, myIdx, totalPlayers, isActive, isFroze
   )
 }
 
+// ── reconcileDisplayOrder ─────────────────────────────────────
+function reconcileDisplayOrder(order, handLength) {
+  const valid   = order.filter(i => i >= 0 && i < handLength)
+  const missing = []
+  for (let i = 0; i < handLength; i++) {
+    if (!valid.includes(i)) missing.push(i)
+  }
+  return [...valid, ...missing]
+}
+
+// ── useDragReorder ────────────────────────────────────────────
+// Container-level pointer tracking + FLIP animation on reorder.
+//
+// FLIP = First / Last / Invert / Play:
+//   Before the state update  → record every card's getBoundingClientRect() (First)
+//   After React re-renders   → record new positions (Last)
+//   Compute the delta        → Invert (start each card translated back to where it was)
+//   Animate to 0,0           → Play (transition to final position)
+//
+// slotRefsMap: Map<actualIdx → DOM element of .hand-card-slot>
+// This lets us look up a card's DOM node regardless of its visual position.
+function useDragReorder({ displayOrder, setDisplayOrder, myRevealed, blocked, containerRef }) {
+  const dragFromRef  = useRef(null)
+  const dragToRef    = useRef(null)
+  const isDragging   = useRef(false)
+  const startX       = useRef(0)
+  const startY       = useRef(0)
+  const longPressT   = useRef(null)
+
+  // Map actualIdx → slot DOM element (populated by renderSlot via callback ref)
+  const slotRefsMap  = useRef(new Map())
+
+  const [draggingIdx, setDraggingIdx] = useState(null)
+  const [dropIdx,     setDropIdx]     = useState(null)
+
+  // ── FLIP animation ──────────────────────────────────────────
+  // Call BEFORE setDisplayOrder to snapshot current positions.
+  // Returns a function to call AFTER the DOM has updated (in useLayoutEffect).
+  const snapPositions = useCallback(() => {
+    const before = new Map()
+    slotRefsMap.current.forEach((el, actualIdx) => {
+      if (el) before.set(actualIdx, el.getBoundingClientRect())
+    })
+    return before
+  }, [])
+
+  const playFlip = useCallback((before) => {
+    // Use rAF to ensure the browser has painted the new layout (Last position)
+    requestAnimationFrame(() => {
+      slotRefsMap.current.forEach((el, actualIdx) => {
+        if (!el || !before.has(actualIdx)) return
+        const first = before.get(actualIdx)
+        const last  = el.getBoundingClientRect()
+        const dx    = first.left - last.left
+        const dy    = first.top  - last.top
+        if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return  // didn't move, skip
+
+        // Invert: jump card back to its old position instantly
+        el.style.transform  = `translate(${dx}px, ${dy}px)`
+        el.style.transition = 'transform 0s'
+
+        // Play: animate to final (0,0) position
+        requestAnimationFrame(() => {
+          el.style.transform  = 'translate(0, 0)'
+          el.style.transition = 'transform 380ms cubic-bezier(0.25, 0.46, 0.45, 0.94)'
+          // Clean up after animation completes
+          const onEnd = () => {
+            el.style.transform  = ''
+            el.style.transition = ''
+            el.removeEventListener('transitionend', onEnd)
+          }
+          el.addEventListener('transitionend', onEnd)
+        })
+      })
+    })
+  }, [])
+
+  // ── Hit-test: which slot is under pointer, ignoring dragging card ──
+  const hitTest = useCallback((x, y) => {
+    const draggingEl = containerRef.current?.querySelector('.hc-dragging')
+    if (draggingEl) draggingEl.style.pointerEvents = 'none'
+    const el = document.elementFromPoint(x, y)
+    if (draggingEl) draggingEl.style.pointerEvents = ''
+    if (!el) return null
+    const slot = el.closest('[data-vidx]')
+    return slot ? parseInt(slot.dataset.vidx, 10) : null
+  }, [containerRef])
+
+  const reset = useCallback(() => {
+    clearTimeout(longPressT.current)
+    dragFromRef.current = null
+    dragToRef.current   = null
+    isDragging.current  = false
+    setDraggingIdx(null)
+    setDropIdx(null)
+  }, [])
+
+  const applyReorder = useCallback(() => {
+    const from = dragFromRef.current
+    const to   = dragToRef.current
+    reset()   // clear drag state FIRST so cards don't flash dragging style during FLIP
+
+    if (from !== null && to !== null && from !== to) {
+      const before = snapPositions()   // First: snapshot before state change
+      setDisplayOrder(prev => {
+        const next = [...prev]
+        const [card] = next.splice(from, 1)
+        next.splice(to, 0, card)
+        return next
+      })
+      // After React commits the new order to the DOM, run the animation
+      // We use a short timeout as a stand-in for useLayoutEffect from outside a component.
+      // The rAF inside playFlip handles the actual timing correctly.
+      setTimeout(() => playFlip(before), 0)
+    }
+  }, [snapPositions, playFlip, setDisplayOrder, reset])
+
+  // ── Per-card pointer down ───────────────────────────────────
+  const onCardPointerDown = useCallback((e, visualIdx) => {
+    if (blocked) return
+    const actualIdx = displayOrder[visualIdx]
+    if (!myRevealed[actualIdx]) return   // unrevealed → let tap reveal
+
+    startX.current      = e.clientX
+    startY.current      = e.clientY
+    dragFromRef.current = visualIdx
+    isDragging.current  = false
+
+    longPressT.current = setTimeout(() => {
+      isDragging.current = true
+      dragToRef.current  = visualIdx
+      setDraggingIdx(visualIdx)
+      setDropIdx(null)
+      try { containerRef.current?.setPointerCapture(e.pointerId) } catch {}
+    }, 200)
+  }, [blocked, displayOrder, myRevealed, containerRef])
+
+  // ── Container-level pointer move ────────────────────────────
+  const onContainerPointerMove = useCallback((e) => {
+    if (dragFromRef.current === null) return
+
+    const dx = Math.abs(e.clientX - startX.current)
+    const dy = Math.abs(e.clientY - startY.current)
+
+    if (!isDragging.current && dx > 8 && dx > dy * 1.3) {
+      clearTimeout(longPressT.current)
+      isDragging.current = true
+      dragToRef.current  = dragFromRef.current
+      setDraggingIdx(dragFromRef.current)
+      setDropIdx(null)
+      try { containerRef.current?.setPointerCapture(e.pointerId) } catch {}
+    }
+
+    if (!isDragging.current) return
+
+    const vidx = hitTest(e.clientX, e.clientY)
+    if (vidx !== null && vidx !== dragToRef.current) {
+      dragToRef.current = vidx
+      setDropIdx(vidx)
+    }
+  }, [containerRef, hitTest])
+
+  const onContainerPointerUp = useCallback((e) => {
+    clearTimeout(longPressT.current)
+    if (isDragging.current) {
+      const vidx = hitTest(e.clientX, e.clientY)
+      if (vidx !== null) dragToRef.current = vidx
+      applyReorder()
+    } else {
+      reset()
+    }
+  }, [hitTest, applyReorder, reset])
+
+  const onContainerPointerCancel = useCallback(() => reset(), [reset])
+
+  // ── Callback ref: register/unregister each slot DOM node ───
+  // Usage: ref={slotRef(actualIdx)} on each .hand-card-slot div
+  const slotRef = useCallback((actualIdx) => (el) => {
+    if (el) slotRefsMap.current.set(actualIdx, el)
+    else    slotRefsMap.current.delete(actualIdx)
+  }, [])
+
+  return {
+    draggingIdx,
+    dropIdx,
+    isDragging,
+    slotRef,
+    onCardPointerDown,
+    onContainerPointerMove,
+    onContainerPointerUp,
+    onContainerPointerCancel,
+  }
+}
+
 // ── Hand HUD ──────────────────────────────────────────────────
 export function HandHud({
   myPlayer, myRevealed, selectedChit, isMyTurn, phase,
@@ -207,45 +443,152 @@ export function HandHud({
   onChitClick, onPass, onCallShow,
 }) {
   if (!myPlayer) return null
-  const chits       = myPlayer.chits ?? []
-  const blocked     = !!specialAction
-  // Large hand for 7+ cards (Extended mode 8+4 = 12 cards)
-  const isLargeHand = chits.length >= 7
+  const chits         = myPlayer.chits ?? []
+  const blocked       = !!specialAction
+  const isStackedHand = chits.length > 8          // 9+ cards → two-layer fan
+  const isLargeHand   = !isStackedHand && chits.length >= 7 // 7-8 → compact grid
+
+  // displayOrder[visualPos] = actual index into chits[]
+  const [displayOrder, setDisplayOrder] = useState(() =>
+    Array.from({ length: chits.length }, (_, i) => i)
+  )
+
+  // Reconcile after hand size changes (pass/receive)
+  const prevHandLen = useRef(chits.length)
+  useEffect(() => {
+    if (chits.length !== prevHandLen.current) {
+      prevHandLen.current = chits.length
+      setDisplayOrder(prev => reconcileDisplayOrder(prev, chits.length))
+    }
+  }, [chits.length])
+
+  const containerRef = useRef(null)
+
+  const {
+    draggingIdx,
+    dropIdx,
+    isDragging,
+    slotRef,
+    onCardPointerDown,
+    onContainerPointerMove,
+    onContainerPointerUp,
+    onContainerPointerCancel,
+  } = useDragReorder({ displayOrder, setDisplayOrder, myRevealed, blocked, containerRef })
 
   let hint = ''
-  if (amIStunned && isMyTurn)        hint = '💥 Stunned! Pass a chit blind!'
-  else if (mustPassNormal)           hint = '✨ Special used — pass a normal chit'
-  else if (isMyTurn && phase==='playing') hint = 'Tap once to reveal all · Select to pass'
-  else if (phase==='playing')        hint = 'Tap once to reveal all 👀'
+  if (amIStunned && isMyTurn)             hint = '💥 Stunned! Pass a chit blind!'
+  else if (mustPassNormal)                hint = '✨ Special used — pass a normal chit'
+  else if (isMyTurn && phase==='playing') hint = 'Tap to reveal · Select to pass · Drag to reorder'
+  else if (phase==='playing')             hint = 'Tap once to reveal all 👀'
+
+  // Shared card-slot renderer
+  // visualIdx  = position in displayOrder (used for drag hit-test via data-vidx)
+  // arcIndex   = position within its layer row (used for fan angle/lift calc)
+  // layerLen   = total cards in that layer (for mid-point calc)
+  // stackedLayer = true if inside a two-layer stacked hand
+  function renderSlot(actualIdx, visualIdx, arcIndex, layerLen, stackedLayer) {
+    const chit = chits[actualIdx]
+    if (!chit) return null
+
+    const iAmDragging   = draggingIdx === visualIdx
+    const iAmDropTarget = dropIdx === visualIdx && draggingIdx !== null && draggingIdx !== visualIdx
+
+    return (
+      <div
+        key={`slot-${actualIdx}`}
+        ref={slotRef(actualIdx)}
+        data-vidx={visualIdx}
+        className={[
+          'hand-card-slot',
+          iAmDragging   ? 'hc-dragging'    : '',
+          iAmDropTarget ? 'hc-drop-target' : '',
+        ].join(' ').trim()}
+        onPointerDown={e => onCardPointerDown(e, visualIdx)}
+        style={{ touchAction: 'none', userSelect: 'none' }}
+      >
+        <HandCard
+          chit={chit}
+          revealed={myRevealed[actualIdx] || false}
+          selected={selectedChit === actualIdx}
+          stunned={amIStunned}
+          frozen={myPlayer.frozen}
+          arcIndex={arcIndex}
+          totalCards={layerLen}
+          isLargeHand={stackedLayer ? false : isLargeHand}
+          isStackedLayer={stackedLayer}
+          isDragging={iAmDragging}
+          onClick={() => {
+            if (isDragging.current) return   // suppress click after drag
+            if (!blocked) onChitClick(actualIdx)
+          }}
+        />
+      </div>
+    )
+  }
+
+  const containerEvents = {
+    ref: containerRef,
+    onPointerMove:   onContainerPointerMove,
+    onPointerUp:     onContainerPointerUp,
+    onPointerCancel: onContainerPointerCancel,
+  }
 
   return (
     <div className="hand-hud">
       {amIStunned && (
-        <div style={{ textAlign:'center', padding:'6px 16px', borderRadius:20, background:'rgba(229,57,53,.2)', border:'1px solid rgba(229,57,53,.5)', color:'#EF5350', fontSize:13, fontWeight:900, animation:'stunPulse 1s ease-in-out infinite' }}>
+        <div style={{
+          textAlign:'center', padding:'6px 16px', borderRadius:20,
+          background:'rgba(229,57,53,.2)', border:'1px solid rgba(229,57,53,.5)',
+          color:'#EF5350', fontSize:13, fontWeight:900,
+          animation:'stunPulse 1s ease-in-out infinite',
+        }}>
           💥 STUNNED — pass blind!
         </div>
       )}
-      <div className={`hand-cards${isLargeHand ? ' hand-cards--large' : ''}`}>
-        {chits.map((c, i) => (
-          <HandCard key={i} chit={c}
-            revealed={myRevealed[i]||false}
-            selected={selectedChit===i}
-            stunned={amIStunned}
-            frozen={myPlayer.frozen}
-            arcIndex={i} totalCards={chits.length}
-            isLargeHand={isLargeHand}
-            onClick={() => !blocked && onChitClick(i)}
-          />
-        ))}
-        {chits.length===0 && <span style={{ color:'rgba(255,255,255,.4)', fontSize:13, fontWeight:800 }}>No chits</span>}
-      </div>
-      {hint && <div style={{ textAlign:'center', fontSize:12, color:'rgba(255,255,255,.5)', fontWeight:800 }}>{hint}</div>}
+
+      {isStackedHand ? (
+        // ── 8+4 mode: two rows, each a fan of ≤6 cards ──
+        <div className="hand-cards hand-cards--stacked" {...containerEvents}>
+          <div className="hand-layer hand-layer--top">
+            {displayOrder.slice(0, 6).map((actualIdx, i) =>
+              renderSlot(actualIdx, i, i, Math.min(6, displayOrder.length), true)
+            )}
+          </div>
+          <div className="hand-layer hand-layer--bottom">
+            {displayOrder.slice(6).map((actualIdx, i) =>
+              renderSlot(actualIdx, 6 + i, i, displayOrder.slice(6).length, true)
+            )}
+          </div>
+        </div>
+      ) : (
+        // ── Normal / large single-row ──
+        <div
+          className={`hand-cards${isLargeHand ? ' hand-cards--large' : ''}`}
+          {...containerEvents}
+        >
+          {displayOrder.map((actualIdx, visualIdx) =>
+            renderSlot(actualIdx, visualIdx, visualIdx, displayOrder.length, false)
+          )}
+          {chits.length === 0 && (
+            <span style={{ color:'rgba(255,255,255,.4)', fontSize:13, fontWeight:800 }}>No chits</span>
+          )}
+        </div>
+      )}
+
+      {hint && (
+        <div style={{ textAlign:'center', fontSize:12, color:'rgba(255,255,255,.5)', fontWeight:800 }}>
+          {hint}
+        </div>
+      )}
+
       <div className="action-row">
-        {phase==='playing' && (isMyTurn||mustPassNormal) && (
-          <button className="btn btn-blue btn-lg"
-            disabled={selectedChit===-1||blocked}
-            onClick={() => onPass(selectedChit)}>
-            {mustPassNormal?'📤 Pass Normal':amIStunned?'🙈 Pass Blind':'📤 Pass Chit'}
+        {phase==='playing' && (isMyTurn || mustPassNormal) && (
+          <button
+            className="btn btn-blue btn-lg"
+            disabled={selectedChit === -1 || blocked}
+            onClick={() => onPass(selectedChit)}
+          >
+            {mustPassNormal ? '📤 Pass Normal' : amIStunned ? '🙈 Pass Blind' : '📤 Pass Chit'}
           </button>
         )}
         {phase==='playing' && canCallShow && !mustPassNormal && !amIStunned && (
@@ -254,7 +597,9 @@ export function HandHud({
           </button>
         )}
         {phase==='playing' && !isMyTurn && !mustPassNormal && (
-          <span style={{ fontSize:12, color:'rgba(255,255,255,.4)', fontWeight:800 }}>Waiting for your turn…</span>
+          <span style={{ fontSize:12, color:'rgba(255,255,255,.4)', fontWeight:800 }}>
+            Waiting for your turn…
+          </span>
         )}
       </div>
     </div>
@@ -332,7 +677,6 @@ export function RoundEndControls({ isHost, onNextRound, onEndGame }) {
 // ── Round Result Modal ────────────────────────────────────────
 export function RoundResultModal({ room }) {
   if (!room?.roundResults?.length) return null
-
   return (
     <div style={{
       position:'fixed', inset:0, zIndex:35,
@@ -356,7 +700,6 @@ export function RoundResultModal({ room }) {
             All hands revealed
           </div>
         </div>
-
         {room.roundResults.map(result => {
           const color = SEAT_COLORS[result.playerIdx % SEAT_COLORS.length]
           const chits = result.chits ?? []

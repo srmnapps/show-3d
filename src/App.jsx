@@ -9,6 +9,7 @@ import { SpecialModalManager } from './components/SpecialModals.jsx'
 import {
   LandingPage, CreateJoinScreen, JoinScreen, LobbyScreen, PublicLobbyScreen,
 } from './components/Screens.jsx'
+import { InGameMenu, ConfirmModal, HowToPlayModal } from './components/InGameMenu.jsx'
 
 const GAME_PHASES = [
   'playing','showWindow','afterShow','roundEnd',
@@ -19,6 +20,16 @@ export default function App() {
   const [screen,     setScreen]     = useState('landing')
   const [playerName, setPlayerName] = useState('')
   const canvasRef = useRef(null)
+
+  // ── In-game menu / modal state ──────────────────────────────
+  const [menuOpen,        setMenuOpen]        = useState(false)
+  const [showHowToPlay,   setShowHowToPlay]   = useState(false)
+  const [leaveConfirm,    setLeaveConfirm]    = useState(false)
+  const [restartConfirm,  setRestartConfirm]  = useState(false)
+
+  // Track whether we're in-game for back-navigation guard
+  const screenRef = useRef(screen)
+  useEffect(() => { screenRef.current = screen }, [screen])
 
   const {
     me, room, logs, myIdx, selectedChit, setSelectedChit,
@@ -39,7 +50,7 @@ export default function App() {
 
   const phase = room?.phase
 
-  // Screen routing based on game phase
+  // ── Screen routing ────────────────────────────────────────
   useEffect(() => {
     if (!phase) return
     if (phase === 'lobby') setScreen('lobby')
@@ -47,27 +58,58 @@ export default function App() {
     if (phase === 'ended') setScreen('end')
   }, [phase])
 
-  // Route to join screen when URL has room code but no session
   useEffect(() => {
     if (initialRoomCode && screen === 'landing') {
       setScreen('join')
     }
   }, [initialRoomCode, screen])
 
-  // ── Navigation handlers ──────────────────────────────────
+  // ── Browser back-button guard ─────────────────────────────
+  // We push a sentinel history entry when entering the game,
+  // and intercept popstate to show a confirmation instead of navigating.
+  useEffect(() => {
+    // Push sentinel when entering game or lobby
+    if (screen === 'game' || screen === 'lobby') {
+      window.history.pushState({ show_sentinel: true }, '')
+    }
+  }, [screen])
+
+  useEffect(() => {
+    function handlePopState(e) {
+      const s = screenRef.current
+      if (s === 'game' || s === 'lobby') {
+        // Re-push sentinel so further back presses keep triggering this
+        window.history.pushState({ show_sentinel: true }, '')
+        setLeaveConfirm(true)
+      }
+    }
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
+
+  // ── Navigation helpers ────────────────────────────────────
+  function goHome() {
+    leaveRoom()
+    setScreen('landing')
+    setMenuOpen(false)
+    setLeaveConfirm(false)
+  }
+
+  function confirmLeaveRoom() {
+    setLeaveConfirm(true)
+    setMenuOpen(false)
+  }
+
   function onPlay(name) { setPlayerName(name); setScreen('createjoin') }
 
-  // Private room
   async function onCreate() {
     await createRoom(playerName, false)
   }
 
-  // Public room
   async function onCreatePublic() {
     await createRoom(playerName, true)
   }
 
-  // Browse public rooms — connect WS just for browsing
   function onBrowse() {
     connectForBrowsing(playerName)
     setScreen('browse')
@@ -75,7 +117,6 @@ export default function App() {
 
   function onGoJoin() { setScreen('join') }
 
-  // nameOverride is set when JoinScreen collects name itself (share-link flow)
   async function onJoin(code, nameOverride, done) {
     const effectiveName = nameOverride ?? playerName
     if (!effectiveName) { done?.(); return }
@@ -87,17 +128,31 @@ export default function App() {
   function onLeave() { leaveRoom(); setScreen('landing') }
   function onBack()  { setScreen(screen === 'join' ? 'createjoin' : 'landing') }
 
+  // ── Host restart (play again from in-game menu) ───────────
+  function handleMenuRestart() {
+    setRestartConfirm(true)
+    setMenuOpen(false)
+  }
+
+  function confirmRestart() {
+    playAgain()
+    setRestartConfirm(false)
+  }
+
+  // ── Host end game from menu ───────────────────────────────
+  function handleMenuEndGame() {
+    endGame()
+    setMenuOpen(false)
+  }
+
   const inGame = screen === 'game'
 
   return (
     <>
-      {/* Hidden canvas */}
       <canvas ref={canvasRef} id="three-canvas" style={{ display:'none' }} />
 
-      {/* Stun flash */}
       {stunFlash && <div className="stun-flash" />}
 
-      {/* Global loading overlay */}
       {loading && <LoadingOverlay message={
         screen === 'join'   ? 'Joining room…'
         : screen === 'lobby'  ? 'Starting game…'
@@ -105,12 +160,40 @@ export default function App() {
         : 'Please wait…'
       } />}
 
+      {/* Leave room confirmation — triggered by browser back or menu */}
+      {leaveConfirm && (
+        <ConfirmModal
+          title="Leave game?"
+          message="You'll be removed from the room. Your progress will be lost."
+          confirmLabel="Leave Room"
+          cancelLabel="Stay"
+          onConfirm={goHome}
+          onCancel={() => setLeaveConfirm(false)}
+          danger
+        />
+      )}
+
+      {/* Host restart confirmation */}
+      {restartConfirm && (
+        <ConfirmModal
+          title="Restart game?"
+          message="This will restart the game for everyone in the room."
+          confirmLabel="Restart"
+          cancelLabel="Cancel"
+          onConfirm={confirmRestart}
+          onCancel={() => setRestartConfirm(false)}
+        />
+      )}
+
+      {/* How to play modal */}
+      {showHowToPlay && (
+        <HowToPlayModal onClose={() => setShowHowToPlay(false)} />
+      )}
+
       <div id="ui-root">
 
-        {/* ── Landing ── */}
         {screen === 'landing' && <LandingPage onPlay={onPlay} />}
 
-        {/* ── Create / Join choice ── */}
         {screen === 'createjoin' && (
           <CreateJoinScreen
             name={playerName}
@@ -122,7 +205,6 @@ export default function App() {
           />
         )}
 
-        {/* ── Join with code ── */}
         {screen === 'join' && (
           <JoinScreen
             name={playerName}
@@ -133,7 +215,6 @@ export default function App() {
           />
         )}
 
-        {/* ── Browse public rooms ── */}
         {screen === 'browse' && (
           <PublicLobbyScreen
             name={playerName}
@@ -145,7 +226,6 @@ export default function App() {
           />
         )}
 
-        {/* ── Lobby ── */}
         {screen === 'lobby' && room && (
           <LobbyScreen
             room={room} me={me} isHost={isHost} wsStatus={wsStatus}
@@ -158,7 +238,6 @@ export default function App() {
           />
         )}
 
-        {/* ── Game ── */}
         {screen === 'game' && room && (
           <>
             {/* Top bar */}
@@ -175,17 +254,37 @@ export default function App() {
                   {room.code}
                 </span>
               </div>
-              <WsStatus status={wsStatus} />
+              <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                <WsStatus status={wsStatus} />
+                {/* ── Settings / menu button ── */}
+                <button
+                  className="ingame-menu-btn"
+                  onClick={() => setMenuOpen(o => !o)}
+                  aria-label="Game menu"
+                >
+                  ⋮
+                </button>
+              </div>
             </div>
 
-            {/* Status pill */}
+            {/* In-game dropdown menu */}
+            {menuOpen && (
+              <InGameMenu
+                isHost={isHost}
+                onHowToPlay={() => { setShowHowToPlay(true); setMenuOpen(false) }}
+                onLeave={confirmLeaveRoom}
+                onRestart={handleMenuRestart}
+                onEndGame={handleMenuEndGame}
+                onClose={() => setMenuOpen(false)}
+              />
+            )}
+
             <StatusPill
               room={room} isMyTurn={isMyTurn}
               turnPlayer={turnPlayer} mustPassNormal={mustPassNormal}
               amIStunned={amIStunned}
             />
 
-            {/* Direction indicator */}
             {phase === 'playing' && (
               <div style={{
                 position:'fixed', top:54, left:'50%', transform:'translateX(-50%)',
@@ -196,7 +295,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Player seats around the table */}
             {room.players.map((player, i) => (
               <PlayerSeat
                 key={player.id}
@@ -209,10 +307,8 @@ export default function App() {
               />
             ))}
 
-            {/* Game log */}
             <GameLog logs={logs} />
 
-            {/* Show window */}
             {phase==='showWindow' && (
               <ShowWindowOverlay
                 countdown={countdown} canJoinShow={canJoinShow}
@@ -220,17 +316,14 @@ export default function App() {
               />
             )}
 
-            {/* Round results */}
             {(phase==='afterShow' || phase==='roundEnd') && room.roundResults && (
               <RoundResultModal room={room} />
             )}
 
-            {/* Round end */}
             {phase==='roundEnd' && (
               <RoundEndControls isHost={isHost} onNextRound={nextRound} onEndGame={endGame} />
             )}
 
-            {/* My hand HUD */}
             {!['showWindow','afterShow'].includes(phase) && (
               <HandHud
                 myPlayer={myPlayer} myRevealed={myRevealed}
@@ -245,7 +338,6 @@ export default function App() {
               />
             )}
 
-            {/* Special modals */}
             <SpecialModalManager
               specialAction={specialAction}
               room={room} myIdx={myIdx}
@@ -261,7 +353,6 @@ export default function App() {
               onBlindSnatchPickCard={blindSnatchPickCard}
             />
 
-            {/* Error toast */}
             {errorMsg && (
               <div style={{
                 position:'fixed', bottom:200, left:'50%', transform:'translateX(-50%)',
@@ -278,7 +369,6 @@ export default function App() {
           </>
         )}
 
-        {/* ── End ── */}
         {screen === 'end' && room && (
           <EndScreen room={room} onPlayAgain={playAgain} onLeave={onLeave} />
         )}
