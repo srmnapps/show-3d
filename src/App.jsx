@@ -9,7 +9,7 @@ import { SpecialModalManager } from './components/SpecialModals.jsx'
 import {
   LandingPage, CreateJoinScreen, JoinScreen, LobbyScreen, PublicLobbyScreen,
 } from './components/Screens.jsx'
-import { InGameMenu, ConfirmModal, HowToPlayModal } from './components/InGameMenu.jsx'
+import { InGameMenu, ConfirmModal, HowToPlayModal } from './components/ingamemenu.jsx'
 
 const GAME_PHASES = [
   'playing','showWindow','afterShow','roundEnd',
