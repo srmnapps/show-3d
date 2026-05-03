@@ -1,35 +1,55 @@
 // show-3d/src/hooks/useWebSocket.js
-// Auto-rejoin on reconnect using localStorage saved session
+// Per-room session storage + URL helpers + send() returns boolean
 
 import { useRef, useCallback } from 'react'
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001'
 
-// ── localStorage helpers ──────────────────────────────────────
-const LS_ME   = 'show_me'
-const LS_ROOM = 'show_room'
+// ── Per-room localStorage helpers ─────────────────────────────
+const LS_PREFIX = 'show_session_'
+const LS_LAST   = 'show_last_room'
 
 export function saveSession(me, roomCode) {
   try {
-    localStorage.setItem(LS_ME,   JSON.stringify(me))
-    localStorage.setItem(LS_ROOM, roomCode)
+    localStorage.setItem(LS_PREFIX + roomCode, JSON.stringify({ me, roomCode, lastSeen: Date.now() }))
+    localStorage.setItem(LS_LAST, roomCode)
   } catch {}
 }
 
-export function clearSession() {
+export function clearSession(roomCode) {
   try {
-    localStorage.removeItem(LS_ME)
-    localStorage.removeItem(LS_ROOM)
+    if (roomCode) {
+      localStorage.removeItem(LS_PREFIX + roomCode)
+      if (localStorage.getItem(LS_LAST) === roomCode) localStorage.removeItem(LS_LAST)
+    } else {
+      const last = localStorage.getItem(LS_LAST)
+      if (last) localStorage.removeItem(LS_PREFIX + last)
+      localStorage.removeItem(LS_LAST)
+    }
   } catch {}
 }
 
-export function loadSession() {
+export function loadSession(roomCode) {
   try {
-    const me       = JSON.parse(localStorage.getItem(LS_ME) || 'null')
-    const roomCode = localStorage.getItem(LS_ROOM)
-    if (me?.id && me?.name && roomCode) return { me, roomCode }
+    const key = roomCode
+      ? LS_PREFIX + roomCode
+      : LS_PREFIX + (localStorage.getItem(LS_LAST) ?? '')
+    const raw = localStorage.getItem(key)
+    if (!raw) return null
+    const { me, roomCode: rc } = JSON.parse(raw)
+    if (me?.id && me?.name && rc) return { me, roomCode: rc }
   } catch {}
   return null
+}
+
+// ── URL helpers ────────────────────────────────────────────────
+export function setRoomUrl(roomCode) {
+  const url = roomCode ? `?room=${roomCode}` : window.location.pathname
+  window.history.replaceState({}, '', url)
+}
+
+export function getRoomFromUrl() {
+  return new URLSearchParams(window.location.search).get('room') ?? null
 }
 
 // ── Hook ──────────────────────────────────────────────────────
@@ -55,7 +75,6 @@ export function useWebSocket() {
 
     ws.onopen = () => {
       setStatus('connected')
-      // Send initial message if queued (CREATE_ROOM / JOIN_ROOM)
       if (pendingMsgRef.current) {
         ws.send(JSON.stringify(pendingMsgRef.current))
         pendingMsgRef.current = null
@@ -73,8 +92,7 @@ export function useWebSocket() {
       setStatus('disconnected')
       if (!manualCloseRef.current) {
         reconnTimerRef.current = setTimeout(() => {
-          // On reconnect — check localStorage for saved session
-          // and automatically rejoin the room
+          // On reconnect — use per-room session (last room)
           const session = loadSession()
           if (session) {
             pendingMsgRef.current = {
@@ -103,11 +121,14 @@ export function useWebSocket() {
     open()
   }, [open])
 
+  /** Returns true if sent, false if socket not open. */
   const send = useCallback((payload) => {
     const ws = wsRef.current
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(payload))
+      return true
     }
+    return false
   }, [])
 
   const disconnect = useCallback(() => {

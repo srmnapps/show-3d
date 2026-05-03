@@ -1,17 +1,13 @@
 // show-3d/src/hooks/useGame.js
-// Server-authoritative + public/private rooms + localStorage reconnect
+// Server-authoritative + per-room sessions + URL routing + bot UI + offline safety
 
-import { useState, useRef, useCallback } from 'react'
-import { useWebSocket, saveSession, clearSession, loadSession } from './useWebSocket.js'
+import { useState, useRef, useCallback, useEffect } from 'react'
+import { useWebSocket, saveSession, clearSession, loadSession, setRoomUrl, getRoomFromUrl } from './useWebSocket.js'
 import { isShowHand, isSpecial, SPECIAL_CONFIG } from '../utils/game.js'
 import { uid } from '../utils/helpers.js'
 
 export function useGame() {
-  const [me,             setMe]            = useState(() => {
-    // On mount — restore me from localStorage if session exists
-    const session = loadSession()
-    return session?.me ?? { id: '', name: '' }
-  })
+  const [me,             setMe]            = useState({ id: '', name: '' })
   const [room,           setRoom]          = useState(null)
   const [logs,           setLogs]          = useState([])
   const [myIdx,          setMyIdx]         = useState(-1)
@@ -24,8 +20,8 @@ export function useGame() {
   const [mustPassNormal, setMustPassNormal]= useState(false)
   const [stunFlash,      setStunFlash]     = useState(false)
   const [isStunned,      setIsStunned]     = useState(false)
-  const [vitalsResult,   setVitalsResult]  = useState(null)
   const [specialAction,  setSpecialAction] = useState(null)
+  const [initialRoomCode,setInitialRoomCode] = useState('')
 
   // ── Public lobby state ────────────────────────────────────
   const [publicRooms, setPublicRooms] = useState([])
@@ -49,17 +45,11 @@ export function useGame() {
   const updateMyRevealed = r => { myRevealedRef.current = r; setMyRevealed(r) }
 
   // ── Derived ──────────────────────────────────────────────
-  const isHost        = room?.hostId === me.id
-  const myPlayer      = room?.players[myIdx]
-  const myPuppetInfo  = room?.puppeteerInfo
-  const amIPuppeteer  = myPuppetInfo?.puppeteerIdx === myIdx && myPuppetInfo?.active === true
-  const amIPuppeted   = myPuppetInfo?.targetIdx === myIdx    && myPuppetInfo?.active === true
-  const puppetTarget  = amIPuppeteer ? room?.players[myPuppetInfo.targetIdx] : null
-  const actingIdx     = amIPuppeteer ? myPuppetInfo.targetIdx : myIdx
-  const actingPlayer  = room?.players[actingIdx]
-  const isMyTurn      = room?.currentTurn === myIdx || (amIPuppeteer && room?.currentTurn === myPuppetInfo.targetIdx)
-  const turnPlayer    = room?.players[room?.currentTurn]
-  const showAll       = ['afterShow','roundEnd','ended'].includes(room?.phase)
+  const isHost     = room?.hostId === me.id
+  const myPlayer   = room?.players[myIdx]
+  const isMyTurn   = room?.currentTurn === myIdx
+  const turnPlayer = room?.players[room?.currentTurn]
+  const showAll    = ['afterShow','roundEnd','ended'].includes(room?.phase)
   const hasJoinedShow = room?.showClicks?.some(c => c.playerIdx === myIdx) ?? false
   const canJoinShow   = room?.phase === 'showWindow' && !hasJoinedShow
   const requiredShowSets = room?.settings?.normalCount === 8 ? 2 : 1
@@ -86,8 +76,7 @@ export function useGame() {
     const r   = roomRef.current
     const myI = myIdxRef.current
     if (!r) return false
-    if (r.currentTurn === myI) return true
-    return !!(r.effects?.find(e => e.type === 'PUPPETEER' && e.ownerIdx === myI && e.targetIdx === r.currentTurn))
+    return r.currentTurn === myI
   }
 
   // ── Auto-reveal ──────────────────────────────────────────
@@ -141,12 +130,14 @@ export function useGame() {
     })
   }, [])
 
-  // ── sendAction ───────────────────────────────────────────
+  // ── sendAction — returns true if sent, false if offline ──
   const sendAction = useCallback((action) => {
     const r = roomRef.current
     const m = meRef.current
-    if (!r?.code || !m?.id) return
-    send({ type: 'ACTION', roomCode: r.code, playerId: m.id, action })
+    if (!r?.code || !m?.id) return false
+    const ok = send({ type: 'ACTION', roomCode: r.code, playerId: m.id, action })
+    if (!ok) setErrorMsg('Disconnected. Reconnecting…')
+    return ok
   }, [send])
 
   // ── toggleVisibility (host only) ─────────────────────────
@@ -181,18 +172,20 @@ export function useGame() {
     if (payload.stunnedPlayer === myI && prevStunned !== myI) triggerStunFlash()
     if (prevStunned === myI && payload.stunnedPlayer !== myI) setIsStunned(false)
 
+    // Sync mustPassNormal from server if field is present
+    if (payload.mustPassNormalPlayerIdx !== undefined) {
+      setMustPassNormal(payload.mustPassNormalPlayerIdx === myI)
+    }
+
     if (np === 'pendingSpecial') {
       const pa = payload.pendingAction
       if (pa?.userIdx === myI) {
-        const excl    = [pa.handOwnerIdx ?? myI]
-        const nextIdx = (payload.currentTurn + payload.direction + payload.players.length) % payload.players.length
+        const excl = [pa.handOwnerIdx ?? myI]
         if (pa.type === 'FREEZE')          setSpecialAction({ type:'PICK_TARGET', actionType:'FREEZE_PICK',                 exclude:excl })
         if (pa.type === 'BLIND_SNATCH')    setSpecialAction({ type:'PICK_TARGET', actionType:'BLIND_SNATCH_PICK',           exclude:excl })
         if (pa.type === 'REVEALED_SNATCH') setSpecialAction({ type:'PICK_TARGET', actionType:'REVEALED_SNATCH_PICK_TARGET', exclude:excl })
         if (pa.type === 'STUN_GRENADE')    setSpecialAction({ type:'PICK_TARGET', actionType:'STUN_GRENADE_PICK',           exclude:excl })
         if (pa.type === 'NUKE')            setSpecialAction({ type:'PICK_TARGET', actionType:'NUKE_PICK_TARGET',            exclude:excl })
-        if (pa.type === 'PUPPETEER')       setSpecialAction({ type:'PICK_TARGET', actionType:'PUPPETEER_PICK',              exclude:[...excl, nextIdx] })
-        if (pa.type === 'POSITION_SWAP')   setSpecialAction({ type:'PICK_TARGET', actionType:'POSITION_SWAP_PICK',          exclude:excl })
       }
     }
     if (np === 'blindSnatchPicking' && payload.pendingAction?.userIdx === myI) {
@@ -223,8 +216,8 @@ export function useGame() {
     switch (data.type) {
 
       case 'ROOM_CREATED': {
-        // Save session so we can rejoin after disconnect
         saveSession(meRef.current, data.roomCode)
+        setRoomUrl(data.roomCode)
         updateRoom(data.room)
         updateLogs(data.logs ?? [])
         updateMyIdx(0)
@@ -235,8 +228,8 @@ export function useGame() {
       }
 
       case 'JOINED_ROOM': {
-        // Save/update session on every successful join (including auto-rejoin)
         saveSession(meRef.current, data.roomCode)
+        setRoomUrl(data.roomCode)
         const prevPhase   = roomRef.current?.phase
         const prevStunned = roomRef.current?.stunnedPlayer
         const prevFrozen  = roomRef.current?.frozenPlayer
@@ -270,8 +263,17 @@ export function useGame() {
       }
 
       case 'ERROR': {
-        setErrorMsg(data.message ?? 'Unknown error')
+        const msg = data.message ?? 'Unknown error'
+        setErrorMsg(msg)
         setLoading(false)
+        // Room no longer exists after reconnect — clear stale session + URL
+        if (msg.toLowerCase().includes('not found')) {
+          const urlRoom = getRoomFromUrl()
+          if (!roomRef.current && urlRoom) {
+            clearSession(urlRoom)
+            setRoomUrl(null)
+          }
+        }
         break
       }
 
@@ -279,6 +281,25 @@ export function useGame() {
         break
     }
   }, [applySyncSideEffects])
+
+  // ── Mount: auto-resume from URL or last session ───────────
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const urlRoom = getRoomFromUrl()
+    const session = loadSession(urlRoom || undefined)
+    if (session?.me?.id && session?.roomCode) {
+      updateMe(session.me)
+      meRef.current = session.me
+      connect(onMessage, setWsStatus, {
+        type:     'JOIN_ROOM',
+        roomCode: session.roomCode,
+        player:   session.me,
+      })
+    } else if (urlRoom) {
+      // URL has room code but no saved session — prefill join screen
+      setInitialRoomCode(urlRoom)
+    }
+  }, []) // mount only
 
   // ── Room management ───────────────────────────────────────
 
@@ -291,7 +312,6 @@ export function useGame() {
       setWsStatus,
       { type: 'CREATE_ROOM', player: { id: newMe.id, name }, isPublic: isPublicRoom },
     )
-    // Session saved in ROOM_CREATED handler when we get the roomCode back
   }, [connect, onMessage])
 
   const joinRoom = useCallback(async (name, code) => {
@@ -303,7 +323,6 @@ export function useGame() {
       setWsStatus,
       { type: 'JOIN_ROOM', roomCode: code, player: { id: newMe.id, name } },
     )
-    // Session saved in JOINED_ROOM handler
   }, [connect, onMessage])
 
   // Connect just for browsing public rooms — no room join
@@ -325,8 +344,9 @@ export function useGame() {
       send({ type: 'LEAVE_ROOM', roomCode: r.code, playerId: m.id })
     }
 
-    // Clear localStorage — intentional leave, don't rejoin
-    clearSession()
+    // Clear per-room session and URL — intentional leave
+    clearSession(r?.code)
+    setRoomUrl(null)
 
     disconnect()
     updateRoom(null); updateMyIdx(-1); setSelectedChit(-1)
@@ -367,27 +387,24 @@ export function useGame() {
   }, [isStunned, amIStunned, revealAllMyCardsWithAnimation])
 
   // ── Chit click ────────────────────────────────────────────
-  const onChitClick = useCallback((i, forActingPlayer = false) => {
+  const onChitClick = useCallback((i) => {
     const r     = roomRef.current
-    const pidx  = forActingPlayer ? r?.puppeteerInfo?.targetIdx : myIdxRef.current
-    const chits = r?.players[pidx]?.chits ?? []
+    const chits = r?.players[myIdxRef.current]?.chits ?? []
     const chit  = chits[i]
     if (!chit) return
 
-    const myRev = forActingPlayer ? Array(chits.length).fill(true) : myRevealedRef.current
-
-    if (!forActingPlayer && (amIStunned || isStunned)) {
+    if (amIStunned || isStunned) {
       if (r?.phase === 'playing' && isMyTurn) setSelectedChit(prev => prev === i ? -1 : i)
       return
     }
 
-    if (!forActingPlayer && !myRev[i]) { revealAllMyCardsWithAnimation(); return }
+    if (!myRevealedRef.current[i]) { revealAllMyCardsWithAnimation(); return }
 
-    const isAnytime     = isSpecial(chit) && SPECIAL_CONFIG[chit.type]?.timing === 'ANYTIME'
-    const canActSpecial = forActingPlayer ? true : (isMyTurn || isAnytime)
+    const isAnytime = isSpecial(chit) && SPECIAL_CONFIG[chit.type]?.timing === 'ANYTIME'
+    const canAct    = isMyTurn || isAnytime
 
-    if (isSpecial(chit) && canActSpecial && r?.phase === 'playing' && !mustPassNormal) {
-      setSpecialAction({ type:'USE_OR_PASS', chitIdx:i, special:chit, forActing:forActingPlayer })
+    if (isSpecial(chit) && canAct && r?.phase === 'playing' && !mustPassNormal) {
+      setSpecialAction({ type:'USE_OR_PASS', chitIdx:i, special:chit })
       setSelectedChit(i)
       return
     }
@@ -397,50 +414,78 @@ export function useGame() {
   }, [isMyTurn, mustPassNormal, revealAllMyCardsWithAnimation, amIStunned, isStunned])
 
   // ── Pass ──────────────────────────────────────────────────
-  const passChit = useCallback((chitIdx, forActingPlayer = false) => {
+  const passChit = useCallback((chitIdx) => {
     if (chitIdx === -1) { setErrorMsg('Select a chit to pass!'); return }
-    const pidx     = forActingPlayer ? roomRef.current?.puppeteerInfo?.targetIdx : myIdxRef.current
-    const actorIdx = myIdxRef.current
-    if (!forActingPlayer) {
-      const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
-    }
+    const pidx = myIdxRef.current
+    const ok   = sendAction({ type:'PASS', actorIdx: pidx, handOwnerIdx: pidx, playerIdx: pidx, chitIdx })
+    if (!ok) return
+
+    const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
     setSelectedChit(-1); setErrorMsg(''); setSpecialAction(null)
     if (mustPassNormal) setMustPassNormal(false)
     if (amIStunned || isStunned) setIsStunned(false)
-    sendAction({ type:'PASS', actorIdx, handOwnerIdx: pidx, playerIdx: pidx, chitIdx })
   }, [sendAction, mustPassNormal, amIStunned, isStunned])
 
   // ── Use special ───────────────────────────────────────────
-  const useSpecial = useCallback((chitIdx, special, forActing = false) => {
+  const useSpecial = useCallback((chitIdx, special) => {
     setSelectedChit(-1)
-    if (!forActing) {
-      const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
-    }
-    const pidx        = forActing ? roomRef.current?.puppeteerInfo?.targetIdx : myIdxRef.current
-    const actorIdx    = myIdxRef.current
-    const handOwnerIdx = pidx
+    const pidx = myIdxRef.current
+    const base = { actorIdx: pidx, handOwnerIdx: pidx, playerIdx: pidx, chitIdx }
     const setMustPassIfTurn = () => { if (isTurnNow()) setMustPassNormal(true) }
-    const base = { actorIdx, handOwnerIdx, playerIdx: handOwnerIdx, chitIdx }
 
     const actionMap = {
-      REVERSE:        () => { sendAction({ type:'USE_REVERSE',        ...base }); setMustPassNormal(true); setSpecialAction(null) },
-      FREEZE:         () => { sendAction({ type:'USE_FREEZE',         ...base }); setSpecialAction({ type:'PICK_TARGET', actionType:'FREEZE_PICK',                 exclude:[handOwnerIdx] }) },
-      BLIND_SNATCH:   () => { sendAction({ type:'USE_BLIND_SNATCH',   ...base }); setSpecialAction({ type:'PICK_TARGET', actionType:'BLIND_SNATCH_PICK',           exclude:[handOwnerIdx] }) },
-      REVEALED_SNATCH:() => { sendAction({ type:'USE_REVEALED_SNATCH',...base }); setSpecialAction({ type:'PICK_TARGET', actionType:'REVEALED_SNATCH_PICK_TARGET', exclude:[handOwnerIdx] }) },
-      STUN_GRENADE:   () => { sendAction({ type:'USE_STUN_GRENADE',   ...base }); setSpecialAction({ type:'PICK_TARGET', actionType:'STUN_GRENADE_PICK',           exclude:[handOwnerIdx] }) },
-      NUKE:           () => { sendAction({ type:'USE_NUKE',           ...base }); setSpecialAction({ type:'PICK_TARGET', actionType:'NUKE_PICK_TARGET',            exclude:[handOwnerIdx] }) },
-      PUPPETEER:      () => { sendAction({ type:'USE_PUPPETEER',      ...base }); setSpecialAction({ type:'PICK_TARGET', actionType:'PUPPETEER_PICK',              exclude:[handOwnerIdx, nextPlayerIdxRef.current] }) },
-      POSITION_SWAP:  () => { sendAction({ type:'USE_POSITION_SWAP',  ...base }); setSpecialAction({ type:'PICK_TARGET', actionType:'POSITION_SWAP_PICK',          exclude:[handOwnerIdx] }) },
+      REVERSE: () => {
+        const ok = sendAction({ type:'USE_REVERSE', ...base })
+        if (!ok) return
+        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
+        setMustPassNormal(true); setSpecialAction(null)
+      },
+      FREEZE: () => {
+        const ok = sendAction({ type:'USE_FREEZE', ...base })
+        if (!ok) return
+        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
+        setSpecialAction({ type:'PICK_TARGET', actionType:'FREEZE_PICK', exclude:[pidx] })
+      },
+      BLIND_SNATCH: () => {
+        const ok = sendAction({ type:'USE_BLIND_SNATCH', ...base })
+        if (!ok) return
+        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
+        setSpecialAction({ type:'PICK_TARGET', actionType:'BLIND_SNATCH_PICK', exclude:[pidx] })
+      },
+      REVEALED_SNATCH: () => {
+        const ok = sendAction({ type:'USE_REVEALED_SNATCH', ...base })
+        if (!ok) return
+        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
+        setSpecialAction({ type:'PICK_TARGET', actionType:'REVEALED_SNATCH_PICK_TARGET', exclude:[pidx] })
+      },
+      STUN_GRENADE: () => {
+        const ok = sendAction({ type:'USE_STUN_GRENADE', ...base })
+        if (!ok) return
+        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
+        setSpecialAction({ type:'PICK_TARGET', actionType:'STUN_GRENADE_PICK', exclude:[pidx] })
+      },
+      NUKE: () => {
+        const ok = sendAction({ type:'USE_NUKE', ...base })
+        if (!ok) return
+        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
+        setSpecialAction({ type:'PICK_TARGET', actionType:'NUKE_PICK_TARGET', exclude:[pidx] })
+      },
       VITALS: () => {
         const r = roomRef.current
+        const ok = sendAction({ type:'USE_VITALS', ...base })
+        if (!ok) return
+        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
         setSpecialAction({ type:'VITALS_RESULT', data: computeVitals(r.players, myIdxRef.current) })
-        sendAction({ type:'USE_VITALS', ...base }); setMustPassIfTurn()
+        setMustPassIfTurn()
       },
       SUPER_VITALS: () => {
         const r       = roomRef.current
         const reqSets = r.settings?.normalCount === 8 ? 2 : 1
+        const ok = sendAction({ type:'USE_SUPER_VITALS', ...base })
+        if (!ok) return
+        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
         setSpecialAction({ type:'SUPER_VITALS_RESULT', data: computeSuperVitals(r.players, myIdxRef.current, reqSets) })
-        sendAction({ type:'USE_SUPER_VITALS', ...base }); setMustPassIfTurn()
+        setMustPassIfTurn()
       },
     }
     actionMap[special.type]?.()
@@ -448,43 +493,53 @@ export function useGame() {
 
   // ── Generic target pick ───────────────────────────────────
   const pickTarget = useCallback((targetIdx, actionType) => {
-    setSpecialAction(null)
     const actionMap = {
-      'BLIND_SNATCH_PICK':           () => { setLoading(true); sendAction({ type:'BLIND_SNATCH_PICK',          targetIdx }) },
-      'REVEALED_SNATCH_PICK_TARGET': () => { setLoading(true); sendAction({ type:'REVEALED_SNATCH_PICK_TARGET',targetIdx }) },
-      'FREEZE_PICK':                 () => { sendAction({ type:'FREEZE_PICK',           targetIdx }); if (isTurnNow()) setMustPassNormal(true) },
-      'STUN_GRENADE_PICK':           () => { sendAction({ type:'STUN_GRENADE_PICK',     targetIdx }); if (isTurnNow()) setMustPassNormal(true) },
-      'NUKE_PICK_TARGET':            () => { setLoading(true); sendAction({ type:'NUKE_PICK_TARGET', targetIdx }) },
-      'PUPPETEER_PICK':              () => sendAction({ type:'PUPPETEER_PICK',           targetIdx }),
-      'POSITION_SWAP_PICK':          () => { sendAction({ type:'POSITION_SWAP_PICK',    targetIdx }); setMustPassNormal(true) },
+      'BLIND_SNATCH_PICK': () => {
+        const ok = sendAction({ type:'BLIND_SNATCH_PICK', targetIdx })
+        if (ok) { setLoading(true); setSpecialAction(null) }
+      },
+      'REVEALED_SNATCH_PICK_TARGET': () => {
+        const ok = sendAction({ type:'REVEALED_SNATCH_PICK_TARGET', targetIdx })
+        if (ok) { setLoading(true); setSpecialAction(null) }
+      },
+      'FREEZE_PICK': () => {
+        const ok = sendAction({ type:'FREEZE_PICK', targetIdx })
+        if (ok) { setSpecialAction(null); if (isTurnNow()) setMustPassNormal(true) }
+      },
+      'STUN_GRENADE_PICK': () => {
+        const ok = sendAction({ type:'STUN_GRENADE_PICK', targetIdx })
+        if (ok) { setSpecialAction(null); if (isTurnNow()) setMustPassNormal(true) }
+      },
+      'NUKE_PICK_TARGET': () => {
+        const ok = sendAction({ type:'NUKE_PICK_TARGET', targetIdx })
+        if (ok) { setLoading(true); setSpecialAction(null) }
+      },
     }
     actionMap[actionType]?.()
   }, [sendAction])
 
   const blindSnatchPickCard = useCallback((targetCardIdx, ownCardIdx) => {
-    setSpecialAction(null); sendAction({ type:'BLIND_SNATCH_PICK_CARD', targetCardIdx, ownCardIdx }); setMustPassNormal(true)
+    const ok = sendAction({ type:'BLIND_SNATCH_PICK_CARD', targetCardIdx, ownCardIdx })
+    if (ok) { setSpecialAction(null); setMustPassNormal(true) }
   }, [sendAction])
 
   const revealedSnatchPick = useCallback((targetCardIdx, ownCardIdx) => {
-    setSpecialAction(null); sendAction({ type:'REVEALED_SNATCH_PICK_CHIT', targetCardIdx, ownCardIdx }); setMustPassNormal(true)
+    const ok = sendAction({ type:'REVEALED_SNATCH_PICK_CHIT', targetCardIdx, ownCardIdx })
+    if (ok) { setSpecialAction(null); setMustPassNormal(true) }
   }, [sendAction])
 
   const nukePickCard = useCallback((chitIdx) => {
-    setSpecialAction(null); sendAction({ type:'NUKE_PICK_CARD', chitIdx })
-    if (isTurnNow()) setMustPassNormal(true)
+    const ok = sendAction({ type:'NUKE_PICK_CARD', chitIdx })
+    if (ok) { setSpecialAction(null); if (isTurnNow()) setMustPassNormal(true) }
   }, [sendAction])
 
   const cancelSpecial = useCallback(() => { setSpecialAction(null); setSelectedChit(-1) }, [])
   const dismissVitals = useCallback(() => setSpecialAction(null), [])
 
-  const consumeVitals = useCallback((chitIdx, type) => {
-    sendAction({ type: type === 'VITALS' ? 'USE_VITALS' : 'USE_SUPER_VITALS', playerIdx: myIdxRef.current, chitIdx })
-    setMustPassNormal(true)
-  }, [sendAction])
-
   const callShow = useCallback(() => {
     if (!canCallShow) { setErrorMsg("Your 4 normals don't all match!"); return }
-    setErrorMsg(''); sendAction({ type:'SHOW', playerIdx: myIdxRef.current, timestamp: Date.now() })
+    setErrorMsg('')
+    sendAction({ type:'SHOW', playerIdx: myIdxRef.current, timestamp: Date.now() })
   }, [canCallShow, sendAction])
 
   const joinShow = useCallback(() => {
@@ -493,19 +548,27 @@ export function useGame() {
   }, [canJoinShow, sendAction])
 
   const nextRound = useCallback(() => {
-    const r = roomRef.current; const s = r?.settings
+    const r  = roomRef.current; const s = r?.settings
     const nc = s?.normalCount ?? 4; const sc = r?.mode === 'normal' ? 0 : (s?.specialCount ?? 2)
-    updateMyRevealed(Array(nc + sc).fill(false))
-    setMustPassNormal(false); setSpecialAction(null); setIsStunned(false)
-    sendAction({ type:'NEXT_ROUND' })
+    const ok = sendAction({ type:'NEXT_ROUND' })
+    if (ok) {
+      updateMyRevealed(Array(nc + sc).fill(false))
+      setMustPassNormal(false); setSpecialAction(null); setIsStunned(false)
+    }
   }, [sendAction])
 
   const endGame   = useCallback(() => sendAction({ type:'END_GAME' }), [sendAction])
 
   const playAgain = useCallback(() => {
-    updateMyRevealed([]); setMustPassNormal(false); setSpecialAction(null); setIsStunned(false)
-    sendAction({ type:'PLAY_AGAIN' })
+    const ok = sendAction({ type:'PLAY_AGAIN' })
+    if (ok) {
+      updateMyRevealed([]); setMustPassNormal(false); setSpecialAction(null); setIsStunned(false)
+    }
   }, [sendAction])
+
+  // ── Bot management ────────────────────────────────────────
+  const addBot    = useCallback(() => sendAction({ type:'ADD_BOT' }), [sendAction])
+  const removeBot = useCallback((targetIdx) => sendAction({ type:'REMOVE_BOT', targetIdx }), [sendAction])
 
   return {
     me, room, logs, myIdx, selectedChit, setSelectedChit,
@@ -513,15 +576,16 @@ export function useGame() {
     isHost, myPlayer, isMyTurn, turnPlayer, showAll,
     myRevealed, countdown, canJoinShow, hasJoinedShow, canCallShow,
     specialAction, mustPassNormal, stunFlash, isStunned, amIStunned,
-    amIPuppeteer, amIPuppeted, puppetTarget, actingIdx, actingPlayer,
     isSpecialUsableNow,
+    initialRoomCode,
     // Public lobby
     publicRooms, isPublic, toggleVisibility, listRooms, connectForBrowsing,
     createRoom, joinRoom, startGame, setMode, setHandSetup, setEnabledSpecials,
     revealChit, onChitClick, passChit, useSpecial, cancelSpecial,
-    pickTarget, blindSnatchPickCard, revealedSnatchPick, nukePickCard, dismissVitals, consumeVitals,
+    pickTarget, blindSnatchPickCard, revealedSnatchPick, nukePickCard, dismissVitals,
     callShow, joinShow,
     nextRound, endGame, playAgain, leaveRoom,
+    addBot, removeBot,
   }
 }
 

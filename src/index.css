@@ -141,7 +141,6 @@ button { cursor: pointer; font-family: 'Nunito', sans-serif; border: none; outli
 .status-show     { background: rgba(229,57,53,.88);   color: #fff; box-shadow: 0 2px 16px rgba(229,57,53,.4); }
 .status-roundend { background: rgba(255,214,0,.92);   color: #111; box-shadow: 0 2px 16px rgba(255,214,0,.4); }
 .status-special  { background: rgba(170,0,255,.88);   color: #fff; box-shadow: 0 2px 16px rgba(170,0,255,.4); }
-.status-puppet   { background: rgba(123,31,162,.88);  color: #fff; box-shadow: 0 2px 16px rgba(123,31,162,.5); }
 
 /* ── PLAYER SEATS ── */
 .seat {
@@ -159,7 +158,6 @@ button { cursor: pointer; font-family: 'Nunito', sans-serif; border: none; outli
 .seat-plate.active  { border-color: rgba(255,255,255,.7); background: rgba(0,0,0,.88); box-shadow: 0 0 0 3px rgba(255,255,255,.18), 0 4px 20px rgba(0,0,0,.5); }
 .seat-plate.stunned { border-color: #fff; animation: stunPulse 1s ease-in-out infinite; }
 .seat-plate.frozen  { border-color: rgba(0,188,212,.6); }
-.seat-plate.puppet  { border-color: rgba(170,0,255,.8); animation: puppetPulse 1.2s ease-in-out infinite; }
 .seat-name  { font-size: 13px; font-weight: 900; color: #fff; max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .seat-score { font-family: 'Fredoka One', cursive; font-size: 16px; color: var(--yellow); }
 
@@ -212,7 +210,6 @@ button { cursor: pointer; font-family: 'Nunito', sans-serif; border: none; outli
 .score-entry.is-show     { border-color: var(--yellow); }
 .score-entry.is-frozen   { border-color: rgba(0,188,212,.5); opacity: .7; }
 .score-entry.is-stunned  { border-color: rgba(255,255,255,.8); animation: stunPulse 1s ease-in-out infinite; }
-.score-entry.is-puppet   { border-color: rgba(170,0,255,.7); animation: puppetPulse 1.2s ease-in-out infinite; }
 
 /* ── GAME LOG ── */
 .log-panel {
@@ -305,8 +302,6 @@ button { cursor: pointer; font-family: 'Nunito', sans-serif; border: none; outli
 .special-card.vitals   { background: rgba(67,160,71,.1);    border-color: rgba(67,160,71,.3); }
 .special-card.svitals  { background: rgba(255,109,0,.1);    border-color: rgba(255,109,0,.3); }
 .special-card.nuke     { background: rgba(229,57,53,.12);   border-color: rgba(229,57,53,.35); }
-.special-card.puppet   { background: rgba(123,31,162,.12);  border-color: rgba(123,31,162,.35); }
-.special-card.pswap    { background: rgba(0,137,123,.1);    border-color: rgba(0,137,123,.3); }
 .special-emoji { font-size: 30px; margin-bottom: 8px; }
 .special-name  { font-weight: 900; font-size: 12px; color: #fff; margin-bottom: 4px; }
 .special-desc  { font-size: 11px; color: rgba(255,255,255,.5); font-weight: 700; line-height: 1.4; }
@@ -560,7 +555,6 @@ button { cursor: pointer; font-family: 'Nunito', sans-serif; border: none; outli
 
 /* ── ANIMATIONS ── */
 @keyframes stunPulse   { 0%,100%{box-shadow:0 0 8px rgba(255,255,255,.25)} 50%{box-shadow:0 0 20px rgba(255,255,255,.7)} }
-@keyframes puppetPulse { 0%,100%{box-shadow:0 0 8px rgba(170,0,255,.3)}  50%{box-shadow:0 0 22px rgba(170,0,255,.8)} }
 @keyframes pulse-glow  { 0%,100%{box-shadow:0 0 16px rgba(229,57,53,.4);transform:scale(1)} 50%{box-shadow:0 0 32px rgba(229,57,53,.6);transform:scale(1.04)} }
 .pulse { animation: pulse-glow .85s ease-in-out infinite; }
 

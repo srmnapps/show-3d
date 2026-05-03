@@ -26,7 +26,7 @@ export default function App() {
     isHost, myPlayer, isMyTurn, turnPlayer, showAll,
     myRevealed, countdown, canJoinShow, hasJoinedShow, canCallShow,
     specialAction, mustPassNormal, stunFlash, isStunned, amIStunned,
-    amIPuppeteer, amIPuppeted, puppetTarget,
+    initialRoomCode,
     // Public/private
     publicRooms, isPublic, toggleVisibility, listRooms, connectForBrowsing,
     createRoom, joinRoom, startGame, setMode, setHandSetup, setEnabledSpecials,
@@ -34,6 +34,7 @@ export default function App() {
     pickTarget, revealedSnatchPick, nukePickCard, dismissVitals, blindSnatchPickCard,
     callShow, joinShow,
     nextRound, endGame, playAgain, leaveRoom,
+    addBot, removeBot,
   } = useGame()
 
   const phase = room?.phase
@@ -46,10 +47,12 @@ export default function App() {
     if (phase === 'ended') setScreen('end')
   }, [phase])
 
-  // Who is puppeteering me?
-  const puppeteerName = amIPuppeted
-    ? room?.players[room?.puppeteerInfo?.puppeteerIdx]?.name ?? 'Someone'
-    : ''
+  // Route to join screen when URL has room code but no session
+  useEffect(() => {
+    if (initialRoomCode && screen === 'landing') {
+      setScreen('join')
+    }
+  }, [initialRoomCode, screen])
 
   // ── Navigation handlers ──────────────────────────────────
   function onPlay(name) { setPlayerName(name); setScreen('createjoin') }
@@ -72,23 +75,17 @@ export default function App() {
 
   function onGoJoin() { setScreen('join') }
 
-  async function onJoin(code, done) {
-    try { await joinRoom(playerName, code) }
+  // nameOverride is set when JoinScreen collects name itself (share-link flow)
+  async function onJoin(code, nameOverride, done) {
+    const effectiveName = nameOverride ?? playerName
+    if (!effectiveName) { done?.(); return }
+    if (nameOverride) setPlayerName(nameOverride)
+    try { await joinRoom(effectiveName, code) }
     catch {} finally { done?.() }
   }
 
   function onLeave() { leaveRoom(); setScreen('landing') }
   function onBack()  { setScreen(screen === 'join' ? 'createjoin' : 'landing') }
-
-  // ── Pass handler ─────────────────────────────────────────
-  const handlePass = useCallback((chitIdx, forActing = false) => {
-    passChit(chitIdx, forActing)
-  }, [passChit])
-
-  // ── Puppeteer chit click (on target's hand) ──────────────
-  const handlePuppetChitClick = useCallback((i) => {
-    onChitClick(i, true)
-  }, [onChitClick])
 
   const inGame = screen === 'game'
 
@@ -132,6 +129,7 @@ export default function App() {
             onJoin={onJoin}
             onBack={onBack}
             errorMsg={errorMsg}
+            initialCode={initialRoomCode}
           />
         )}
 
@@ -140,7 +138,7 @@ export default function App() {
           <PublicLobbyScreen
             name={playerName}
             publicRooms={publicRooms}
-            onJoin={(code) => onJoin(code, () => {})}
+            onJoin={(code) => onJoin(code, undefined, () => {})}
             onRefresh={listRooms}
             onBack={() => setScreen('createjoin')}
             loading={loading}
@@ -155,6 +153,8 @@ export default function App() {
             setHandSetup={setHandSetup} setEnabledSpecials={setEnabledSpecials}
             isPublic={isPublic}
             onToggleVisibility={toggleVisibility}
+            onAddBot={addBot}
+            onRemoveBot={removeBot}
           />
         )}
 
@@ -182,7 +182,7 @@ export default function App() {
             <StatusPill
               room={room} isMyTurn={isMyTurn}
               turnPlayer={turnPlayer} mustPassNormal={mustPassNormal}
-              amIStunned={amIStunned} amIPuppeteer={amIPuppeteer} amIPuppeted={amIPuppeted}
+              amIStunned={amIStunned}
             />
 
             {/* Direction indicator */}
@@ -205,8 +205,6 @@ export default function App() {
                 isActive={room.currentTurn===i && phase==='playing'}
                 isFrozen={room.frozenPlayer===i}
                 isStunned={room.stunnedPlayer===i}
-                isPuppeteer={room.puppeteerInfo?.puppeteerIdx===i}
-                isPuppeted={room.puppeteerInfo?.targetIdx===i}
                 isMe={i===myIdx}
               />
             ))}
@@ -241,9 +239,8 @@ export default function App() {
                 mustPassNormal={mustPassNormal}
                 specialAction={specialAction}
                 amIStunned={amIStunned}
-                amIPuppeteer={amIPuppeteer}
                 onChitClick={onChitClick}
-                onPass={handlePass}
+                onPass={passChit}
                 onCallShow={callShow}
               />
             )}
@@ -254,21 +251,14 @@ export default function App() {
               room={room} myIdx={myIdx}
               myPlayer={myPlayer}
               myRevealed={myRevealed}
-              amIPuppeted={amIPuppeted}
-              amIPuppeteer={amIPuppeteer}
-              puppetTarget={puppetTarget}
-              puppeteerName={puppeteerName}
               onUse={useSpecial}
-              onPass={handlePass}
+              onPass={passChit}
               onCancel={cancelSpecial}
               onPickTarget={pickTarget}
               onRevealedSnatchPick={revealedSnatchPick}
               onNukePickCard={nukePickCard}
               onDismissVitals={dismissVitals}
               onBlindSnatchPickCard={blindSnatchPickCard}
-              onPuppetChitClick={handlePuppetChitClick}
-              onPuppetPass={(chitIdx) => handlePass(chitIdx, true)}
-              onPuppetUseSpecial={(chitIdx, special) => useSpecial(chitIdx, special, true)}
             />
 
             {/* Error toast */}

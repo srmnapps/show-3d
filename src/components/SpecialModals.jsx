@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { isSpecial, chitDisplay, SEAT_COLORS, SPECIALS } from '../utils/game.js'
+import { isSpecial, chitDisplay, SEAT_COLORS } from '../utils/game.js'
 import { initials } from '../utils/helpers.js'
 
 // ── Shared modal wrapper ──────────────────────────────────────
@@ -92,12 +92,11 @@ function PlayerBtn({ player, idx, onClick, icon }) {
 }
 
 // ── USE or PASS modal ─────────────────────────────────────────
-export function UseOrPassModal({ special, chitIdx, onUse, onPass, onCancel, forActing, isMyTurn }) {
+export function UseOrPassModal({ special, chitIdx, onUse, onPass, onCancel, isMyTurn }) {
   const colorMap = {
     REVERSE:'#1E88E5', FREEZE:'#26C6DA', BLIND_SNATCH:'#FFD600',
     REVEALED_SNATCH:'#AA00FF', STUN_GRENADE:'#E53935', VITALS:'#43A047',
-    SUPER_VITALS:'#FF8F00', NUKE:'#E53935', PUPPETEER:'#7B1FA2',
-    POSITION_SWAP:'#00897B',
+    SUPER_VITALS:'#FF8F00', NUKE:'#E53935',
   }
   const descMap = {
     REVERSE:        'Flip the passing direction for the rest of this round.',
@@ -108,27 +107,20 @@ export function UseOrPassModal({ special, chitIdx, onUse, onPass, onCancel, forA
     VITALS:         'See a probability report of who is close to calling Show.',
     SUPER_VITALS:   'Activate round-long alert: know when anyone reaches 4-match!',
     NUKE:           'Pick a player and destroy one of their special cards!',
-    PUPPETEER:      'Control another player\'s entire turn — see their hand!',
-    POSITION_SWAP:  'Swap turn-order position with another player this round.',
   }
   const color = colorMap[special.type] ?? '#1E88E5'
   const canPass = isMyTurn !== false
   return (
     <Modal emoji={special.emoji} title={special.name} color={color}>
-      {forActing && (
-        <div style={{ textAlign:'center', fontSize:11, color:'rgba(255,255,255,.45)', marginBottom:8, fontWeight:800 }}>
-          🎭 Using as Puppeteer
-        </div>
-      )}
       <p style={{ color:'rgba(255,255,255,.55)', fontSize:13, textAlign:'center', marginBottom:24, fontWeight:700, lineHeight:1.5 }}>
         {descMap[special.type] ?? ''}
       </p>
       <div style={{ display:'flex', gap:10, justifyContent:'center', marginBottom:10 }}>
-        <button className="btn btn-green btn-lg" onClick={() => onUse(chitIdx, special, forActing)}>
+        <button className="btn btn-green btn-lg" onClick={() => onUse(chitIdx, special)}>
           ✨ Use It
         </button>
         {canPass && (
-          <button className="btn btn-blue" onClick={() => onPass(chitIdx, forActing)}>
+          <button className="btn btn-blue" onClick={() => onPass(chitIdx)}>
             📤 Pass It
           </button>
         )}
@@ -144,7 +136,6 @@ export function PickTargetModal({ actionType, players, myIdx, exclude, onPick })
     FREEZE_PICK:'🧊',
     BLIND_SNATCH_PICK:'🎲', REVEALED_SNATCH_PICK_TARGET:'👁',
     STUN_GRENADE_PICK:'💥', NUKE_PICK_TARGET:'💣',
-    PUPPETEER_PICK:'🎭', POSITION_SWAP_PICK:'🔀',
   }
   const titleMap = {
     FREEZE_PICK:'Pick Target — Freeze',
@@ -152,8 +143,6 @@ export function PickTargetModal({ actionType, players, myIdx, exclude, onPick })
     REVEALED_SNATCH_PICK_TARGET:'Pick Target — Revealed Snatch',
     STUN_GRENADE_PICK:'Pick Target — Stun Grenade',
     NUKE_PICK_TARGET:'Pick Target — Nuke',
-    PUPPETEER_PICK:'Pick Target — Puppeteer',
-    POSITION_SWAP_PICK:'Pick Target — Position Swap',
   }
   const hintMap = {
     FREEZE_PICK:'Their turn will be skipped once.',
@@ -161,14 +150,11 @@ export function PickTargetModal({ actionType, players, myIdx, exclude, onPick })
     REVEALED_SNATCH_PICK_TARGET:'You\'ll see 2 of their cards and swap one.',
     STUN_GRENADE_PICK:'Their screen flashes and all chits go hidden!',
     NUKE_PICK_TARGET:'You\'ll pick which of their specials to destroy.',
-    PUPPETEER_PICK:'You\'ll control their entire turn — see their hand!',
-    POSITION_SWAP_PICK:'You\'ll swap turn positions for this round.',
   }
   const colorMap = {
     FREEZE_PICK:'#26C6DA',
     BLIND_SNATCH_PICK:'#FFD600', REVEALED_SNATCH_PICK_TARGET:'#AA00FF',
     STUN_GRENADE_PICK:'#E53935', NUKE_PICK_TARGET:'#E53935',
-    PUPPETEER_PICK:'#7B1FA2', POSITION_SWAP_PICK:'#00897B',
   }
   const color = colorMap[actionType] ?? '#1E88E5'
   return (
@@ -201,10 +187,8 @@ export function BlindSnatchPickModal({ targetIdx, handOwnerIdx, players, myIdx, 
   const hoIdx           = handOwnerIdx ?? myIdx
   const handOwnerPlayer = players[hoIdx]
   const handOwnerChits  = handOwnerPlayer?.chits ?? []
-  const isOwnHand       = hoIdx === myIdx
 
-  const targetNormals = targetChits.map((c, i) => ({ c, i })).filter(({ c }) => !isSpecial(c))
-  // All normal cards from hand owner — no revealed filter (player knows their own cards)
+  const targetNormals    = targetChits.map((c, i) => ({ c, i })).filter(({ c }) => !isSpecial(c))
   const ownRevealedCards = handOwnerChits.map((c, i) => ({ c, i })).filter(({ c }) => !isSpecial(c))
 
   const canConfirm = selTarget !== -1 && selOwn !== -1 && targetNormals.length > 0 && ownRevealedCards.length > 0
@@ -258,7 +242,6 @@ export function RevealedSnatchPickModal({ options, targetName, targetIdx, handOw
   const handOwnerChits  = players[hoIdx]?.chits ?? []
   const revealedIdxs    = new Set((options ?? []).map(o => o.i))
 
-  // All normal cards from hand owner — no revealed filter
   const ownRevealedCards = handOwnerChits.map((c, i) => ({ c, i })).filter(({ c }) => !isSpecial(c))
 
   const canConfirm = selTarget !== -1 && selOwn !== -1 && ownRevealedCards.length > 0
@@ -421,124 +404,22 @@ export function SuperVitalsModal({ data, onClose }) {
   )
 }
 
-// ── Puppeteer: you are being controlled ──────────────────────
-export function PuppetedOverlay({ puppeteerName }) {
-  return (
-    <div style={{
-      position:'fixed', inset:0, zIndex:45,
-      display:'flex', alignItems:'center', justifyContent:'center',
-      background:'rgba(123,31,162,.25)', backdropFilter:'blur(4px)',
-      pointerEvents:'none',
-    }}>
-      <div style={{
-        padding:'20px 32px', borderRadius:20,
-        background:'rgba(123,31,162,.85)', backdropFilter:'blur(16px)',
-        border:'2px solid rgba(170,0,255,.6)',
-        textAlign:'center',
-        boxShadow:'0 0 40px rgba(123,31,162,.5)',
-      }}>
-        <div style={{ fontSize:48, marginBottom:8 }}>🎭</div>
-        <div style={{ fontFamily:"'Fredoka One',cursive", fontSize:'1.3rem', color:'#fff', marginBottom:6 }}>
-          You're being Puppeteered!
-        </div>
-        <div style={{ color:'rgba(255,255,255,.65)', fontSize:13, fontWeight:800 }}>
-          {puppeteerName} is controlling your turn…
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ── Puppeteer: target's hand shown to puppeteer ───────────────
-export function PuppeteerHandModal({ targetPlayer, targetIdx, targetName, selectedChit, onChitClick, onPass, onUseSpecial, onDone }) {
-  const [sel, setSel] = useState(-1)
-  const chits = targetPlayer?.chits ?? []
-
-  function handleChit(i) {
-    const chit = chits[i]
-    if (!chit) return
-    setSel(prev => prev === i ? -1 : i)
-    onChitClick(i)
-  }
-
-  return (
-    <Modal emoji="🎭" title={`Controlling ${targetName}`} color="#7B1FA2">
-      <p style={{ color:'rgba(170,0,255,.6)', fontSize:12, textAlign:'center', marginBottom:16, fontWeight:800 }}>
-        You see their full hand — select a chit to pass or use a special!
-      </p>
-
-      <div style={{ display:'flex', gap:8, justifyContent:'center', flexWrap:'wrap', marginBottom:20 }}>
-        {chits.map((c, i) => (
-          <div key={i} style={{ textAlign:'center' }}>
-            <MiniChit chit={c} selected={sel===i} onClick={() => handleChit(i)} />
-            {isSpecial(c) && (
-              <div style={{ fontSize:8, color:'rgba(170,0,255,.7)', fontWeight:900, marginTop:3, textTransform:'uppercase' }}>
-                {c.name}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      <div style={{ display:'flex', gap:8, justifyContent:'center', flexWrap:'wrap' }}>
-        <button className="btn btn-blue"
-          disabled={sel===-1 || isSpecial(chits[sel])}
-          onClick={() => onPass(sel, true)}>
-          📤 Pass Chit
-        </button>
-        {sel !== -1 && isSpecial(chits[sel]) && (
-          <button className="btn btn-purple"
-            onClick={() => onUseSpecial(sel, chits[sel], true)}>
-            ✨ Use {chits[sel]?.name}
-          </button>
-        )}
-      </div>
-    </Modal>
-  )
-}
-
 // ── Master dispatcher ─────────────────────────────────────────
 export function SpecialModalManager({
   specialAction, room, myIdx, myPlayer, myRevealed,
-  amIPuppeted, amIPuppeteer, puppetTarget,
-  puppeteerName,
   onUse, onPass, onCancel,
   onPickTarget, onBlindSnatchPickCard, onRevealedSnatchPick, onNukePickCard,
   onDismissVitals,
-  onPuppetChitClick, onPuppetPass, onPuppetUseSpecial,
 }) {
-  if (!specialAction && !amIPuppeted && !amIPuppeteer) return null
-
-  // Compute isMyTurn from room state
-  const isMyTurn = room?.currentTurn === myIdx
-    || !!(room?.effects?.find(e => e.type === 'PUPPETEER' && e.ownerIdx === myIdx && e.targetIdx === room?.currentTurn))
-
-  if (amIPuppeteer && !specialAction) {
-    return (
-      <PuppeteerHandModal
-        targetPlayer={puppetTarget}
-        targetIdx={room?.puppeteerInfo?.targetIdx}
-        targetName={puppetTarget?.name ?? 'Target'}
-        onChitClick={onPuppetChitClick}
-        onPass={onPuppetPass}
-        onUseSpecial={onPuppetUseSpecial}
-        onDone={onCancel}
-      />
-    )
-  }
-
-  if (amIPuppeted && !specialAction) {
-    return <PuppetedOverlay puppeteerName={puppeteerName} />
-  }
-
   if (!specialAction) return null
+
+  const isMyTurn = room?.currentTurn === myIdx
 
   switch (specialAction.type) {
     case 'USE_OR_PASS':
       return (
         <UseOrPassModal
           special={specialAction.special} chitIdx={specialAction.chitIdx}
-          forActing={specialAction.forActing}
           isMyTurn={isMyTurn}
           onUse={onUse} onPass={onPass} onCancel={onCancel}
         />

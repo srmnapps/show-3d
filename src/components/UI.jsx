@@ -35,10 +35,10 @@ export function WsStatus({ status }) {
 }
 
 // ── Hand card (fan arc layout) ────────────────────────────────
-export function HandCard({ chit, revealed, selected, onClick, arcIndex, totalCards, stunned, frozen, isPuppetTarget, isLargeHand }) {
+export function HandCard({ chit, revealed, selected, onClick, arcIndex, totalCards, stunned, frozen, isLargeHand }) {
   const special = isSpecial(chit)
   const display = chitDisplay(chit)
-  const isBlind = (stunned || frozen) && !isPuppetTarget
+  const isBlind = stunned || frozen
   const showFront = !isBlind && revealed
 
   const mid   = (totalCards - 1) / 2
@@ -148,17 +148,28 @@ function getSeatPos(relIdx, total) {
   return (seats[total]??seats[2])[relIdx] ?? { bottom:'13%', left:'50%', transform:'translateX(-50%)' }
 }
 
-export function PlayerSeat({ player, idx, myIdx, totalPlayers, isActive, isFrozen, isStunned, isPuppeteer, isPuppeted, isMe }) {
+// Small inline badge helper
+function Badge({ label, bg, color }) {
+  return (
+    <span style={{
+      fontSize: 8, fontWeight: 900, letterSpacing: .5,
+      padding: '1px 5px', borderRadius: 6,
+      background: bg, color,
+      textTransform: 'uppercase',
+    }}>{label}</span>
+  )
+}
+
+export function PlayerSeat({ player, idx, myIdx, totalPlayers, isActive, isFrozen, isStunned, isMe }) {
   const relIdx = (idx - myIdx + totalPlayers) % totalPlayers
   const pos    = getSeatPos(relIdx, totalPlayers)
   const color  = SEAT_COLORS[idx % SEAT_COLORS.length]
   const specCount = player.chits.filter(c => isSpecial(c)).length
 
   let plateClass = 'seat-plate'
-  if (isActive)   plateClass += ' active'
-  if (isFrozen)   plateClass += ' frozen'
-  if (isStunned)  plateClass += ' stunned'
-  if (isPuppeted) plateClass += ' puppet'
+  if (isActive)  plateClass += ' active'
+  if (isFrozen)  plateClass += ' frozen'
+  if (isStunned) plateClass += ' stunned'
 
   return (
     <div className="seat" style={{ ...pos, position:'fixed' }}>
@@ -173,11 +184,12 @@ export function PlayerSeat({ player, idx, myIdx, totalPlayers, isActive, isFroze
           {player.name}{isMe?' (you)':''}
         </span>
         <span className="seat-score">{player.score>0?'+':''}{player.score}</span>
-        {isFrozen   && <span style={{ fontSize:13 }}>🧊</span>}
-        {isStunned  && <span style={{ fontSize:13 }}>💥</span>}
-        {isPuppeteer&& <span style={{ fontSize:13 }}>🎭</span>}
-        {isPuppeted && <span style={{ fontSize:13 }}>🎭</span>}
+        {isFrozen  && <span style={{ fontSize:13 }}>🧊</span>}
+        {isStunned && <span style={{ fontSize:13 }}>💥</span>}
         {player.isShow && <span style={{ fontSize:13 }}>🔥</span>}
+        {player.isBot    && <Badge label="BOT"     bg="rgba(30,136,229,.3)"  color="#90CAF9" />}
+        {player.botActive && <Badge label="AUTO"   bg="rgba(67,160,71,.3)"   color="#A5D6A7" />}
+        {player.online === false && <Badge label="OFF" bg="rgba(229,57,53,.3)" color="#EF9A9A" />}
       </div>
       <div style={{ display:'flex', gap:5, alignItems:'center', padding:'3px 10px', borderRadius:12, background:'rgba(0,0,0,.55)', border:`1px solid ${color}33` }}>
         <span style={{ fontSize:12 }}>🃏</span>
@@ -191,31 +203,26 @@ export function PlayerSeat({ player, idx, myIdx, totalPlayers, isActive, isFroze
 // ── Hand HUD ──────────────────────────────────────────────────
 export function HandHud({
   myPlayer, myRevealed, selectedChit, isMyTurn, phase,
-  canCallShow, mustPassNormal, specialAction, amIStunned, amIPuppeteer,
+  canCallShow, mustPassNormal, specialAction, amIStunned,
   onChitClick, onPass, onCallShow,
 }) {
   if (!myPlayer) return null
   const chits       = myPlayer.chits ?? []
-  const blocked     = !!specialAction || amIPuppeteer
-  const isLargeHand = chits.length > 8
+  const blocked     = !!specialAction
+  // Large hand for 7+ cards (Extended mode 8+4 = 12 cards)
+  const isLargeHand = chits.length >= 7
 
   let hint = ''
-  if (amIPuppeteer)                         hint = '🎭 You are puppeteering — use the control panel'
-  else if (amIStunned && isMyTurn)          hint = '💥 Stunned! Pass a chit blind!'
-  else if (mustPassNormal)                  hint = '✨ Special used — pass a normal chit'
-  else if (isMyTurn && phase==='playing')   hint = 'Tap once to reveal all · Select to pass'
-  else if (phase==='playing')               hint = 'Tap once to reveal all 👀'
+  if (amIStunned && isMyTurn)        hint = '💥 Stunned! Pass a chit blind!'
+  else if (mustPassNormal)           hint = '✨ Special used — pass a normal chit'
+  else if (isMyTurn && phase==='playing') hint = 'Tap once to reveal all · Select to pass'
+  else if (phase==='playing')        hint = 'Tap once to reveal all 👀'
 
   return (
     <div className="hand-hud">
       {amIStunned && (
         <div style={{ textAlign:'center', padding:'6px 16px', borderRadius:20, background:'rgba(229,57,53,.2)', border:'1px solid rgba(229,57,53,.5)', color:'#EF5350', fontSize:13, fontWeight:900, animation:'stunPulse 1s ease-in-out infinite' }}>
           💥 STUNNED — pass blind!
-        </div>
-      )}
-      {amIPuppeteer && (
-        <div style={{ textAlign:'center', padding:'6px 16px', borderRadius:20, background:'rgba(170,0,255,.2)', border:'1px solid rgba(170,0,255,.5)', color:'#CC44FF', fontSize:13, fontWeight:900 }}>
-          🎭 Puppeteering — see control panel above
         </div>
       )}
       <div className={`hand-cards${isLargeHand ? ' hand-cards--large' : ''}`}>
@@ -234,19 +241,19 @@ export function HandHud({
       </div>
       {hint && <div style={{ textAlign:'center', fontSize:12, color:'rgba(255,255,255,.5)', fontWeight:800 }}>{hint}</div>}
       <div className="action-row">
-        {phase==='playing' && (isMyTurn||mustPassNormal) && !amIPuppeteer && (
+        {phase==='playing' && (isMyTurn||mustPassNormal) && (
           <button className="btn btn-blue btn-lg"
             disabled={selectedChit===-1||blocked}
             onClick={() => onPass(selectedChit)}>
             {mustPassNormal?'📤 Pass Normal':amIStunned?'🙈 Pass Blind':'📤 Pass Chit'}
           </button>
         )}
-        {phase==='playing' && canCallShow && !mustPassNormal && !amIStunned && !amIPuppeteer && (
+        {phase==='playing' && canCallShow && !mustPassNormal && !amIStunned && (
           <button className="btn btn-red btn-lg pulse" disabled={blocked} onClick={onCallShow}>
             🎉 SHOW!
           </button>
         )}
-        {phase==='playing' && !isMyTurn && !mustPassNormal && !amIPuppeteer && (
+        {phase==='playing' && !isMyTurn && !mustPassNormal && (
           <span style={{ fontSize:12, color:'rgba(255,255,255,.4)', fontWeight:800 }}>Waiting for your turn…</span>
         )}
       </div>
@@ -266,17 +273,15 @@ export function GameLog({ logs }) {
 }
 
 // ── Status pill ───────────────────────────────────────────────
-export function StatusPill({ room, isMyTurn, turnPlayer, mustPassNormal, amIStunned, amIPuppeteer, amIPuppeted }) {
+export function StatusPill({ room, isMyTurn, turnPlayer, mustPassNormal, amIStunned }) {
   if (!room || room.phase==='lobby') return null
   const { phase } = room
   let cls='status-pill ', text=''
-  if (amIPuppeteer)                         { cls+='status-puppet';   text='🎭 You are Puppeteering!' }
-  else if (amIPuppeted)                     { cls+='status-puppet';   text='🎭 Being Puppeteered…' }
-  else if (phase==='playing') {
-    if (amIStunned&&isMyTurn)               { cls+='status-show';    text='💥 Stunned — pass blind!' }
-    else if (mustPassNormal)                { cls+='status-playing'; text='✨ Now pass a normal chit!' }
-    else if (isMyTurn)                      { cls+='status-playing'; text='✋ YOUR TURN!' }
-    else                                    { cls+='status-wait';    text=`${turnPlayer?.name}'s turn…` }
+  if (phase==='playing') {
+    if (amIStunned&&isMyTurn)    { cls+='status-show';    text='💥 Stunned — pass blind!' }
+    else if (mustPassNormal)     { cls+='status-playing'; text='✨ Now pass a normal chit!' }
+    else if (isMyTurn)           { cls+='status-playing'; text='✋ YOUR TURN!' }
+    else                         { cls+='status-wait';    text=`${turnPlayer?.name}'s turn…` }
   }
   else if (phase==='showWindow')            { cls+='status-show';     text='🎉 SHOW WINDOW OPEN!' }
   else if (phase==='afterShow')             { cls+='status-show';     text='👀 Revealing hands…' }
