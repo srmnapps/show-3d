@@ -1,8 +1,4 @@
 // show-3d/src/components/Screens.jsx
-// Added: CreateJoinScreen now has Private/Public choice
-// Added: PublicLobbyScreen — browse and join public rooms
-// Added: LobbyScreen gets visibility toggle for host
-// Everything else unchanged
 
 import { useEffect, useState } from 'react'
 import { WsStatus } from './UI.jsx'
@@ -124,8 +120,6 @@ export function LandingPage({ onPlay }) {
             { cls:'vitals',   emoji:'📊', name:'Vitals',          desc:'See a match probability report for all other players.' },
             { cls:'svitals',  emoji:'⚡', name:'Super Vitals',    desc:'Instantly know if anyone can call SHOW right now!' },
             { cls:'nuke',     emoji:'💣', name:'Nuke',            desc:'Destroy one of a target player\'s special cards!' },
-            { cls:'puppet',   emoji:'🎭', name:'Puppeteer',       desc:'Control another player\'s entire turn — see their hand!' },
-            { cls:'pswap',    emoji:'🔀', name:'Position Swap',   desc:'Swap turn-order position with any player this round.' },
           ].map(({ cls, emoji, name, desc }) => (
             <div key={name} className={`special-card ${cls}`}>
               <div className="special-emoji">{emoji}</div>
@@ -164,7 +158,6 @@ export function LandingPage({ onPlay }) {
 }
 
 // ── Create / Join choice ──────────────────────────────────────
-// Now has 4 options: Private Create, Public Create, Join with Code, Browse Public
 export function CreateJoinScreen({ name, onCreate, onCreatePublic, onGoJoin, onBrowse, onBack }) {
   return (
     <div className="join-wrap">
@@ -207,7 +200,6 @@ export function CreateJoinScreen({ name, onCreate, onCreatePublic, onGoJoin, onB
 
 // ── Public Lobby Browser ──────────────────────────────────────
 export function PublicLobbyScreen({ name, publicRooms, onJoin, onRefresh, onBack, loading }) {
-  // Auto-refresh every 5 seconds
   useEffect(() => {
     onRefresh()
     const t = setInterval(onRefresh, 5000)
@@ -282,33 +274,54 @@ export function PublicLobbyScreen({ name, publicRooms, onJoin, onRefresh, onBack
 }
 
 // ── Join Screen ───────────────────────────────────────────────
-export function JoinScreen({ name, onJoin, onBack, errorMsg }) {
-  const [code, setCode] = useState('')
-  const [busy, setBusy] = useState(false)
+// initialCode: pre-filled from URL (share link)
+// If name is empty (visitor via link), shows a name input too
+export function JoinScreen({ name, onJoin, onBack, errorMsg, initialCode = '' }) {
+  const [code,      setCode]      = useState(initialCode)
+  const [localName, setLocalName] = useState('')
+  const [busy,      setBusy]      = useState(false)
+
+  const needsName    = !name
+  const effectiveName = name || localName.trim()
+
   async function go() {
-    if (!code.trim()) return
+    if (!code.trim() || !effectiveName) return
     setBusy(true)
-    await onJoin(code.trim().toUpperCase(), () => setBusy(false))
+    await onJoin(code.trim().toUpperCase(), needsName ? localName.trim() : undefined, () => setBusy(false))
   }
+
   return (
     <div className="join-wrap">
       <div className="join-inner">
         <div style={{ textAlign:'center', marginBottom:24 }}>
           <div className="logo-title" style={{ fontSize:'3.5rem' }}>SHOW</div>
-          <div className="logo-sub">Enter the room code</div>
+          <div className="logo-sub">
+            {needsName ? 'Join a room' : 'Enter the room code'}
+          </div>
         </div>
         <div className="name-entry">
+          {/* Name field — only shown when visiting via share link */}
+          {needsName && (
+            <div className="input-group" style={{ marginBottom:12 }}>
+              <label className="input-label">Your Name</label>
+              <input className="input" placeholder="Enter your name…"
+                value={localName} maxLength={18}
+                onChange={e => setLocalName(e.target.value)}
+                onKeyDown={e => { if (e.key==='Enter') go() }}
+                autoFocus />
+            </div>
+          )}
           <div className="input-group">
             <label className="input-label">Room Code</label>
             <input className="input input-code" placeholder="XXXX"
               value={code} maxLength={9}
               onChange={e => setCode(e.target.value.toUpperCase())}
               onKeyDown={e => { if (e.key==='Enter') go() }}
-              autoFocus />
+              autoFocus={!needsName} />
           </div>
           {errorMsg && <p className="error-msg" style={{ marginBottom:10 }}>{errorMsg}</p>}
           <button className="btn btn-blue" style={{ width:'100%', marginBottom:8, fontSize:16 }}
-            disabled={busy||!code.trim()} onClick={go}>
+            disabled={busy || !code.trim() || !effectiveName} onClick={go}>
             {busy ? '⏳ Joining…' : '🚀 Join Room'}
           </button>
           <button className="btn btn-ghost" style={{ width:'100%' }} onClick={onBack}>← Back</button>
@@ -319,8 +332,8 @@ export function JoinScreen({ name, onJoin, onBack, errorMsg }) {
 }
 
 // ── Lobby Screen ──────────────────────────────────────────────
-export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSetMode, setHandSetup, setEnabledSpecials, isPublic, onToggleVisibility }) {
-  const [copied, setCopied] = useState(false)
+export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSetMode, setHandSetup, setEnabledSpecials, isPublic, onToggleVisibility, onAddBot, onRemoveBot }) {
+  const [copied,    setCopied]    = useState(false)
   const [specsOpen, setSpecsOpen] = useState(() => window.innerWidth >= 900)
 
   async function doCopy() {
@@ -341,7 +354,6 @@ export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSe
         <div className="lobby-header">
           <h2 className="lobby-title">🏠 Lobby</h2>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            {/* Visibility badge + toggle (host only) */}
             <div style={{ display:'flex', alignItems:'center', gap:6 }}>
               <span style={visibilityBadge(isPublic)}>
                 {isPublic ? '🌐 Public' : '🔒 Private'}
@@ -387,17 +399,45 @@ export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSe
                         {initials(p.name)}
                       </div>
                       <span style={{ flex: 1, fontSize: 13, fontWeight: 900 }}>{p.name}</span>
+                      {/* Status badges */}
+                      {p.isBot && (
+                        <span style={botBadgeStyle}>🤖 BOT</span>
+                      )}
+                      {p.botActive && (
+                        <span style={autoBadgeStyle}>AUTO</span>
+                      )}
+                      {p.online === false && (
+                        <span style={offlineBadgeStyle}>OFFLINE</span>
+                      )}
                       {p.id === me.id && (
                         <span style={{ fontSize: 10, fontWeight: 900, color: sc, background: `${sc}22`, padding: '2px 8px', borderRadius: 10, border: `1px solid ${sc}44` }}>You</span>
                       )}
                       {room.hostId === p.id && (
                         <span style={{ fontSize: 10, fontWeight: 900, color: '#FFD600', background: 'rgba(255,214,0,.1)', padding: '2px 8px', borderRadius: 10, border: '1px solid rgba(255,214,0,.3)', marginLeft: 4 }}>Host</span>
                       )}
-                      <span className="online-dot" />
+                      {/* Remove bot button */}
+                      {p.isBot && isHost && (
+                        <button
+                          onClick={() => onRemoveBot?.(i)}
+                          style={{ fontSize:11, padding:'2px 6px', borderRadius:6, background:'rgba(229,57,53,.2)', border:'1px solid rgba(229,57,53,.4)', color:'#EF9A9A', cursor:'pointer', marginLeft:4 }}
+                        >✕</button>
+                      )}
+                      {!p.isBot && <span className="online-dot" />}
                     </div>
                   )
                 })}
               </div>
+
+              {/* Add bot button */}
+              {isHost && room.players.length < 5 && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  style={{ marginTop:8, width:'100%', fontSize:12 }}
+                  onClick={() => onAddBot?.()}
+                >
+                  🤖 Add Bot
+                </button>
+              )}
             </div>
           </div>
 
@@ -541,3 +581,21 @@ const visibilityBadge = (isPublic) => ({
   color:        isPublic ? '#81C784' : 'rgba(255,255,255,.5)',
   border:       `1px solid ${isPublic ? 'rgba(67,160,71,.3)' : 'rgba(255,255,255,.15)'}`,
 })
+
+const botBadgeStyle = {
+  fontSize: 10, fontWeight: 900, padding: '2px 7px', borderRadius: 10,
+  background: 'rgba(30,136,229,.2)', color: '#90CAF9',
+  border: '1px solid rgba(30,136,229,.35)',
+}
+
+const autoBadgeStyle = {
+  fontSize: 10, fontWeight: 900, padding: '2px 7px', borderRadius: 10,
+  background: 'rgba(67,160,71,.2)', color: '#A5D6A7',
+  border: '1px solid rgba(67,160,71,.35)',
+}
+
+const offlineBadgeStyle = {
+  fontSize: 10, fontWeight: 900, padding: '2px 7px', borderRadius: 10,
+  background: 'rgba(229,57,53,.15)', color: '#EF9A9A',
+  border: '1px solid rgba(229,57,53,.3)',
+}

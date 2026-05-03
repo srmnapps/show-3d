@@ -9,8 +9,6 @@ export const SPECIALS = [
   { type: 'VITALS',         emoji: '📊', name: 'Vitals'          },
   { type: 'SUPER_VITALS',   emoji: '⚡', name: 'Super Vitals'    },
   { type: 'NUKE',           emoji: '💣', name: 'Nuke'            },
-  { type: 'PUPPETEER',      emoji: '🎭', name: 'Puppeteer'       },
-  { type: 'POSITION_SWAP',  emoji: '🔀', name: 'Position Swap'   },
 ]
 
 export const SPECIAL_CONFIG = {
@@ -22,8 +20,6 @@ export const SPECIAL_CONFIG = {
   STUN_GRENADE:   { timing:'ANYTIME',   consume:true, kind:'EFFECT',             trigger:'UNTIL_TARGET_PASS',       expires:'AFTER_TARGET_PASS' },
   VITALS:         { timing:'ANYTIME',   consume:true, kind:'SNAPSHOT' },
   SUPER_VITALS:   { timing:'ANYTIME',   consume:true, kind:'ROUND_EFFECT',       trigger:'AFTER_CARD_CHANGE',       expires:'ROUND_END' },
-  POSITION_SWAP:  { timing:'TURN_ONLY', consume:true, kind:'EFFECT',             trigger:'AFTER_OWNER_NORMAL_PASS', expires:'ONCE' },
-  PUPPETEER:      { timing:'ANYTIME',   consume:true, kind:'TURN_CONTROL',       trigger:'ON_TARGET_TURN',          expires:'AFTER_TARGET_PASS' },
 }
 
 export const AVATAR_COLORS = [
@@ -126,9 +122,6 @@ export function makeRoom(code, host) {
     players: [host], showClicks: [],
     frozenPlayer: -1,
     stunnedPlayer: -1,
-    puppeteerInfo: null,
-    positionSwaps: [],
-    pendingPositionSwap: null,
     pendingAction: null,
     mode: 'special',
     superVitalsUsed: false,
@@ -165,22 +158,12 @@ function makeEffect(type, ownerIdx, targetIdx, trigger, expires, data = {}) {
   return { id: Date.now() + Math.random(), type, ownerIdx, targetIdx, trigger, expires, data }
 }
 
-function getActivePuppeteerEffect(room) {
-  return (room.effects ?? []).find(e => e.type === 'PUPPETEER' && e.targetIdx === room.currentTurn) ?? null
-}
-
 function resolveActorHandOwner(room, action) {
   if (action.actorIdx != null && action.handOwnerIdx != null) {
-    const ppe = getActivePuppeteerEffect(room)
-    const isPuppeteerControl = ppe != null && ppe.ownerIdx === action.actorIdx && ppe.targetIdx === action.handOwnerIdx
-    return { actorIdx: action.actorIdx, handOwnerIdx: action.handOwnerIdx, isPuppeteerControl }
-  }
-  const ppe = getActivePuppeteerEffect(room)
-  if (ppe) {
-    return { actorIdx: ppe.ownerIdx, handOwnerIdx: ppe.targetIdx, isPuppeteerControl: true }
+    return { actorIdx: action.actorIdx, handOwnerIdx: action.handOwnerIdx }
   }
   const idx = action.playerIdx ?? 0
-  return { actorIdx: idx, handOwnerIdx: idx, isPuppeteerControl: false }
+  return { actorIdx: idx, handOwnerIdx: idx }
 }
 
 function hasSpecial(player, type, chitIdx) {
@@ -198,57 +181,7 @@ function validateSpecialUse(room, action, specialType, actorIdx, handOwnerIdx) {
   if (!room.players[handOwnerIdx]) return false
   if (!hasSpecial(room.players[handOwnerIdx], specialType, action.chitIdx)) return false
   if (cfg.timing === 'TURN_ONLY' && handOwnerIdx !== room.currentTurn) return false
-  const ppe = getActivePuppeteerEffect(room)
-  if (ppe && actorIdx === ppe.targetIdx) return false
   return true
-}
-
-function remapIdx(idx, a, b) {
-  if (idx === a) return b
-  if (idx === b) return a
-  return idx
-}
-
-function swapPlayerObjectsAndRefs(room, a, b) {
-  if (a === b || a < 0 || b < 0) return
-  if (!room.players[a] || !room.players[b]) return
-
-  const temp = room.players[a]
-  room.players[a] = room.players[b]
-  room.players[b] = temp
-
-  room.currentTurn  = remapIdx(room.currentTurn,  a, b)
-  room.frozenPlayer = remapIdx(room.frozenPlayer,  a, b)
-  room.stunnedPlayer = remapIdx(room.stunnedPlayer, a, b)
-  room.showCaller   = remapIdx(room.showCaller,    a, b)
-
-  if (Array.isArray(room.showClicks)) {
-    room.showClicks = room.showClicks.map(c => ({ ...c, playerIdx: remapIdx(c.playerIdx, a, b) }))
-  }
-
-  if (room.puppeteerInfo) {
-    room.puppeteerInfo.puppeteerIdx = remapIdx(room.puppeteerInfo.puppeteerIdx, a, b)
-    room.puppeteerInfo.targetIdx    = remapIdx(room.puppeteerInfo.targetIdx,    a, b)
-  }
-
-  if (room.pendingAction) {
-    if (typeof room.pendingAction.userIdx      === 'number') room.pendingAction.userIdx      = remapIdx(room.pendingAction.userIdx,      a, b)
-    if (typeof room.pendingAction.handOwnerIdx === 'number') room.pendingAction.handOwnerIdx = remapIdx(room.pendingAction.handOwnerIdx, a, b)
-    if (typeof room.pendingAction.targetIdx    === 'number') room.pendingAction.targetIdx    = remapIdx(room.pendingAction.targetIdx,    a, b)
-  }
-
-  if (room.pendingPositionSwap) {
-    room.pendingPositionSwap.from = remapIdx(room.pendingPositionSwap.from, a, b)
-    room.pendingPositionSwap.to   = remapIdx(room.pendingPositionSwap.to,   a, b)
-  }
-
-  if (Array.isArray(room.effects)) {
-    room.effects = room.effects.map(e => ({
-      ...e,
-      ownerIdx:  remapIdx(e.ownerIdx,  a, b),
-      targetIdx: remapIdx(e.targetIdx, a, b),
-    }))
-  }
 }
 
 function checkSuperVitals(room) {
@@ -274,29 +207,9 @@ function runEffects(room, trigger, context, log) {
   if (!room.effects) room.effects = []
   const toRemove = []
 
-  if (trigger === 'AFTER_OWNER_NORMAL_PASS') {
-    const { passedPlayerIdx } = context
-    room.effects.forEach(e => {
-      if (e.type === 'POSITION_SWAP' && e.ownerIdx === passedPlayerIdx) {
-        const nameA = room.players[e.ownerIdx]?.name
-        const nameB = room.players[e.targetIdx]?.name
-        const from  = e.ownerIdx
-        const to    = e.targetIdx
-        swapPlayerObjectsAndRefs(room, from, to)
-        room.positionSwaps.push({ from, to })
-        log(`🔀 Positions swapped! ${nameA} ↔ ${nameB}`)
-        toRemove.push(e.id)
-      }
-    })
-  }
-
   if (trigger === 'AFTER_TARGET_PASS') {
     const { passedPlayerIdx } = context
     room.effects.forEach(e => {
-      if (e.type === 'PUPPETEER' && e.targetIdx === passedPlayerIdx) {
-        room.puppeteerInfo = null
-        toRemove.push(e.id)
-      }
       if (e.type === 'STUN_GRENADE' && e.targetIdx === passedPlayerIdx) {
         room.stunnedPlayer = -1
         if (room.players[passedPlayerIdx]) room.players[passedPlayerIdx].stunned = false
@@ -312,7 +225,7 @@ function runEffects(room, trigger, context, log) {
   room.effects = room.effects.filter(e => !toRemove.includes(e.id))
 }
 
-// ── Pure reducer ──────────────────────────────────────────────
+// ── Pure reducer (reference — server is authoritative) ────────
 export function applyAction(room, logs, action) {
   const r  = JSON.parse(JSON.stringify(room))
   if (!r.effects) r.effects = []
@@ -355,8 +268,8 @@ export function applyAction(room, logs, action) {
       r.phase = 'playing'; r.round = 1; r.currentTurn = 0
       r.direction = 1; r.showCaller = -1; r.showClicks = []
       r.frozenPlayer = -1; r.stunnedPlayer = -1
-      r.puppeteerInfo = null; r.positionSwaps = []; r.pendingAction = null
-      r.pendingPositionSwap = null; r.superVitalsUsed = false
+      r.pendingAction = null
+      r.superVitalsUsed = false
       r.effects = []; r.superVitalsAlert = null; r.roundResults = null
       log(`Round 1 started! ${r.players[0].name}'s turn.`)
       break
@@ -378,14 +291,8 @@ export function applyAction(room, logs, action) {
 
       log(`${r.players[pi].name} passed a chit to ${r.players[ni].name}.`)
 
-      runEffects(r, 'AFTER_OWNER_NORMAL_PASS', { passedPlayerIdx: pi }, log)
-      runEffects(r, 'AFTER_TARGET_PASS',        { passedPlayerIdx: pi }, log)
-      runEffects(r, 'AFTER_CARD_CHANGE',         {},                     log)
-
-      // Activate puppeteer control when the target's turn arrives
-      if (r.puppeteerInfo && !r.puppeteerInfo.active && r.puppeteerInfo.targetIdx === r.currentTurn) {
-        r.puppeteerInfo = { ...r.puppeteerInfo, active: true }
-      }
+      runEffects(r, 'AFTER_TARGET_PASS', { passedPlayerIdx: pi }, log)
+      runEffects(r, 'AFTER_CARD_CHANGE', {},                      log)
       break
     }
 
@@ -541,50 +448,6 @@ export function applyAction(room, logs, action) {
       break
     }
 
-    case 'USE_PUPPETEER': {
-      const { actorIdx, handOwnerIdx } = resolveActorHandOwner(r, action)
-      if (!validateSpecialUse(r, action, 'PUPPETEER', actorIdx, handOwnerIdx)) break
-      consumeSpecial(r, handOwnerIdx, 'PUPPETEER', action.chitIdx)
-      r.pendingAction = { type: 'PUPPETEER', userIdx: actorIdx, handOwnerIdx }
-      r.phase = 'pendingSpecial'
-      log(`🎭 ${r.players[actorIdx].name} plays Puppeteer!`)
-      break
-    }
-
-    case 'PUPPETEER_PICK': {
-      const { userIdx } = r.pendingAction
-      const targetIdx = action.targetIdx
-      const nextIdx = nextPlayer(r, r.currentTurn)
-      if (targetIdx === userIdx || targetIdx === nextIdx) break
-      // active:false — puppeteer control activates only when currentTurn reaches targetIdx
-      r.puppeteerInfo = { puppeteerIdx: userIdx, targetIdx, active: false }
-      r.effects.push(makeEffect('PUPPETEER', userIdx, targetIdx, 'ON_TARGET_TURN', 'AFTER_TARGET_PASS'))
-      r.pendingAction = null; r.phase = 'playing'
-      log(`🎭 ${r.players[userIdx].name} will control ${r.players[targetIdx].name} on their next turn!`)
-      break
-    }
-
-    case 'USE_POSITION_SWAP': {
-      const { actorIdx, handOwnerIdx } = resolveActorHandOwner(r, action)
-      if (!validateSpecialUse(r, action, 'POSITION_SWAP', actorIdx, handOwnerIdx)) break
-      consumeSpecial(r, handOwnerIdx, 'POSITION_SWAP', action.chitIdx)
-      r.pendingAction = { type: 'POSITION_SWAP', userIdx: actorIdx, handOwnerIdx }
-      r.phase = 'pendingSpecial'
-      log(`🔀 ${r.players[actorIdx].name} plays Position Swap!`)
-      break
-    }
-
-    case 'POSITION_SWAP_PICK': {
-      const { userIdx, handOwnerIdx } = r.pendingAction
-      const targetIdx  = action.targetIdx
-      const ownerIdx   = handOwnerIdx ?? userIdx
-      r.effects.push(makeEffect('POSITION_SWAP', ownerIdx, targetIdx, 'AFTER_OWNER_NORMAL_PASS', 'ONCE'))
-      r.pendingPositionSwap = null
-      r.pendingAction = null; r.phase = 'playing'
-      log(`🔀 ${r.players[ownerIdx].name} set up a position swap with ${r.players[targetIdx].name} — pass a chit to trigger!`)
-      break
-    }
-
     case 'SHOW': {
       const ci = action.playerIdx
       r.showCaller = ci; r.phase = 'showWindow'
@@ -648,14 +511,6 @@ export function applyAction(room, logs, action) {
     }
 
     case 'ROUND_END': {
-      if (r.positionSwaps.length > 0) {
-        ;[...r.positionSwaps].reverse().forEach(({ from, to }) => {
-          const tmp = r.players[from]
-          r.players[from] = r.players[to]
-          r.players[to] = tmp
-        })
-      }
-      r.pendingPositionSwap = null
       r.effects = r.effects.filter(e => e.expires !== 'ROUND_END')
       r.superVitalsAlert = null
       r.phase = 'roundEnd'; break
@@ -669,8 +524,8 @@ export function applyAction(room, logs, action) {
       r.phase = 'playing'; r.round += 1; r.currentTurn = 0
       r.direction = 1; r.showCaller = -1; r.showClicks = []
       r.frozenPlayer = -1; r.stunnedPlayer = -1
-      r.puppeteerInfo = null; r.positionSwaps = []; r.pendingAction = null
-      r.pendingPositionSwap = null; r.superVitalsUsed = false
+      r.pendingAction = null
+      r.superVitalsUsed = false
       r.effects = []; r.superVitalsAlert = null; r.roundResults = null
       log('─── Round ' + r.round + ' started! ' + r.players[0].name + "'s turn. ───")
       break
@@ -690,8 +545,8 @@ export function applyAction(room, logs, action) {
       r.phase = 'lobby'; r.round = 1; r.currentTurn = 0
       r.direction = 1; r.showCaller = -1; r.showClicks = []
       r.frozenPlayer = -1; r.stunnedPlayer = -1
-      r.puppeteerInfo = null; r.positionSwaps = []; r.pendingAction = null
-      r.pendingPositionSwap = null; r.superVitalsUsed = false
+      r.pendingAction = null
+      r.superVitalsUsed = false
       r.effects = []; r.superVitalsAlert = null; r.roundResults = null
       break
     }
