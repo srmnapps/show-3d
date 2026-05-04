@@ -11,7 +11,9 @@ import {
 } from './components/Screens.jsx'
 import { InGameMenu, ConfirmModal, HowToPlayModal } from './components/ingamemenu.jsx'
 import {
-  initAudio, playSound, getSoundEnabled, setSoundEnabled, getSoundVolume, setSoundVolume,
+  initAudio, playSound, getSoundEnabled, setSoundEnabled,
+  getAmbienceEnabled, setAmbienceEnabled,
+  playAmbience, stopAmbience, chooseGameLoop, resetGameLoop,
   withButtonSound,
 } from './utils/sounds.js'
 
@@ -40,7 +42,8 @@ export default function App() {
   const canvasRef = useRef(null)
 
   // ── Sound state ─────────────────────────────────────────────
-  const [soundOn, setSoundOn] = useState(() => getSoundEnabled())
+  const [soundOn,    setSoundOn]    = useState(() => getSoundEnabled())
+  const [ambienceOn, setAmbienceOn] = useState(() => getAmbienceEnabled())
 
   useEffect(() => { initAudio() }, [])
 
@@ -48,6 +51,12 @@ export default function App() {
     const next = !soundOn
     setSoundOn(next)
     setSoundEnabled(next)
+  }
+
+  function toggleAmbience() {
+    const next = !ambienceOn
+    setAmbienceOn(next)
+    setAmbienceEnabled(next)
   }
 
   // ── In-game menu / modal state ──────────────────────────────
@@ -81,6 +90,29 @@ export default function App() {
   } = useGame()
 
   const phase = room?.phase
+
+  // ── Ambience by screen / phase ────────────────────────────
+  useEffect(() => {
+    const lobbyScreens = ['landing', 'room-loading', 'createjoin', 'join', 'browse', 'lobby']
+    const resultPhases = ['afterShow', 'roundEnd', 'ended']
+    const gameActivePhases = [
+      'playing','showWindow','pendingSpecial',
+      'blindSnatchPicking','revealedSnatchPicking','nukePicking',
+    ]
+
+    if (lobbyScreens.includes(screen)) {
+      playAmbience('lobby')
+      resetGameLoop()
+    } else if (screen === 'end') {
+      playAmbience('result')
+    } else if (screen === 'game') {
+      if (phase && resultPhases.includes(phase)) {
+        playAmbience('result')
+      } else if (phase && gameActivePhases.includes(phase)) {
+        playAmbience(chooseGameLoop())
+      }
+    }
+  }, [screen, phase])
 
   // ── Inject SPA history on first load at /room/:code ────────
   // If the user opened /room/XYZ directly, browser history has no /
@@ -200,13 +232,13 @@ export default function App() {
   }
 
   async function onCreate() {
-    playSound('button')
+    playSound('loadingStart')
     await createRoom(playerName, false)
     // navigateToRoom called inside useGame on ROOM_CREATED
   }
 
   async function onCreatePublic() {
-    playSound('button')
+    playSound('loadingStart')
     await createRoom(playerName, true)
   }
 
@@ -219,7 +251,7 @@ export default function App() {
   function onGoJoin() { playSound('button'); setScreen('join') }
 
   async function onJoin(code, nameOverride, done) {
-    playSound('button')
+    playSound('loadingStart')
     const effectiveName = nameOverride ?? playerName
     if (!effectiveName) { done?.(); return }
     if (nameOverride) setPlayerName(nameOverride)
@@ -351,7 +383,7 @@ export default function App() {
         {screen === 'lobby' && room && (
           <LobbyScreen
             room={room} me={me} isHost={isHost} wsStatus={wsStatus}
-            onStart={withButtonSound(startGame)} onLeave={onLeave} onSetMode={setMode}
+            onStart={() => { playSound('loadingStart'); startGame() }} onLeave={onLeave} onSetMode={setMode}
             setHandSetup={setHandSetup} setEnabledSpecials={setEnabledSpecials}
             isPublic={isPublic}
             onToggleVisibility={withButtonSound(toggleVisibility)}
@@ -390,11 +422,21 @@ export default function App() {
                 <button
                   className="ingame-menu-btn"
                   onClick={toggleSound}
-                  aria-label={soundOn ? 'Mute sounds' : 'Unmute sounds'}
-                  title={soundOn ? 'Sound: On' : 'Sound: Off'}
+                  aria-label={soundOn ? 'Mute SFX' : 'Unmute SFX'}
+                  title={soundOn ? 'SFX: On' : 'SFX: Off'}
                   style={{ fontSize: 14 }}
                 >
                   {soundOn ? '🔊' : '🔇'}
+                </button>
+                {/* ── Ambience toggle ── */}
+                <button
+                  className="ingame-menu-btn"
+                  onClick={toggleAmbience}
+                  aria-label={ambienceOn ? 'Mute music' : 'Unmute music'}
+                  title={ambienceOn ? 'Music: On' : 'Music: Off'}
+                  style={{ fontSize: 14 }}
+                >
+                  {ambienceOn ? '🎵' : '🎵' /* same icon, dimmed via title */}
                 </button>
               </div>
             </div>

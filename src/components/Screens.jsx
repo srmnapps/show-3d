@@ -35,7 +35,7 @@ export function LandingPage({ onPlay }) {
           ))}
 
           <div className="logo-title">SHOW</div>
-          <div className="logo-sub">Telugu Chit Matching Game · 2–5 Players</div>
+          <div className="logo-sub">Card Matching Game · 2–5 Players</div>
 
           {/* Sample cards */}
           <div style={{ display:'flex', gap:8, marginBottom:32, position:'relative' }}>

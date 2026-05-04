@@ -351,6 +351,7 @@ function useDragReorder({ displayOrder, setDisplayOrder, myRevealed, blocked, co
     reset()   // clear drag state FIRST so cards don't flash dragging style during FLIP
 
     if (from !== null && to !== null && from !== to) {
+      playSound('cardReorder')
       const before = snapPositions()   // First: snapshot before state change
       setDisplayOrder(prev => {
         const next = [...prev]

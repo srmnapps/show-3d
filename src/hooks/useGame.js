@@ -5,7 +5,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { useWebSocket, saveSession, clearSession, loadSession, navigateToRoom, navigateHome, getRoomCodeFromPath } from './useWebSocket.js'
 import { isShowHand, isSpecial, SPECIAL_CONFIG } from '../utils/game.js'
 import { uid } from '../utils/helpers.js'
-import { playSound, SPECIAL_SOUND_MAP } from '../utils/sounds.js'
+import { playSound } from '../utils/sounds.js'
 
 export function useGame() {
   const [me,             setMe]            = useState({ id: '', name: '' })
@@ -179,16 +179,10 @@ export function useGame() {
       prevPhaseRef.current = np
     }
 
-    // ── Sound trigger on new log entries containing "passed" ─
+    // ── Sound trigger: cardPass and specials are handled via SOUND_EVENT ──
+    // Phase-based sounds are handled below
     const newLogs  = logs ?? []
-    const prevLen  = prevLogsLenRef.current
     prevLogsLenRef.current = newLogs.length
-    if (newLogs.length > prevLen) {
-      const recent = newLogs.slice(0, newLogs.length - prevLen)
-      if (recent.some(l => typeof l === 'string' && l.toLowerCase().includes('passed'))) {
-        playSound('cardPass')
-      }
-    }
 
 
     if (np === 'playing' && (prevPhase === 'roundEnd' || prevPhase === 'lobby')) {
@@ -241,9 +235,26 @@ export function useGame() {
     }
   }, [syncRevealed, startCountdown, clearCountdown, triggerStunFlash, fireSuperVitalsAlert])
 
+  const lastSoundEventIds = useRef(new Set())
+
   // ── onMessage ─────────────────────────────────────────────
   const onMessage = useCallback((data) => {
     switch (data.type) {
+
+      case 'SOUND_EVENT': {
+        const { id, sound } = data
+        if (id && lastSoundEventIds.current.has(id)) break
+        if (id) {
+          lastSoundEventIds.current.add(id)
+          // Keep set bounded — prune oldest if over 50
+          if (lastSoundEventIds.current.size > 50) {
+            const first = lastSoundEventIds.current.values().next().value
+            lastSoundEventIds.current.delete(first)
+          }
+        }
+        if (sound) playSound(sound)
+        break
+      }
 
       case 'ROOM_CREATED': {
         saveSession(meRef.current, data.roomCode)
@@ -450,7 +461,7 @@ export function useGame() {
     const pidx = myIdxRef.current
     const ok   = sendAction({ type:'PASS', actorIdx: pidx, handOwnerIdx: pidx, playerIdx: pidx, chitIdx })
     if (!ok) return
-    playSound('cardPass')
+    // cardPass sound plays for all players via log-based trigger in applySyncSideEffects
     const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
     setSelectedChit(-1); setErrorMsg(''); setSpecialAction(null)
     if (mustPassNormal) setMustPassNormal(false)
@@ -468,42 +479,42 @@ export function useGame() {
       REVERSE: () => {
         const ok = sendAction({ type:'USE_REVERSE', ...base })
         if (!ok) return
-        playSound(SPECIAL_SOUND_MAP.REVERSE)
+        // Sound plays for all via SOUND_EVENT from server
         const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
         setMustPassNormal(true); setSpecialAction(null)
       },
       FREEZE: () => {
         const ok = sendAction({ type:'USE_FREEZE', ...base })
         if (!ok) return
-        playSound(SPECIAL_SOUND_MAP.FREEZE)
+        // Sound plays for all via SOUND_EVENT from server
         const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
         setSpecialAction({ type:'PICK_TARGET', actionType:'FREEZE_PICK', exclude:[pidx] })
       },
       BLIND_SNATCH: () => {
         const ok = sendAction({ type:'USE_BLIND_SNATCH', ...base })
         if (!ok) return
-        playSound(SPECIAL_SOUND_MAP.BLIND_SNATCH)
+        // Sound plays for all via SOUND_EVENT from server
         const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
         setSpecialAction({ type:'PICK_TARGET', actionType:'BLIND_SNATCH_PICK', exclude:[pidx] })
       },
       REVEALED_SNATCH: () => {
         const ok = sendAction({ type:'USE_REVEALED_SNATCH', ...base })
         if (!ok) return
-        playSound(SPECIAL_SOUND_MAP.REVEALED_SNATCH)
+        // Sound plays for all via SOUND_EVENT from server
         const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
         setSpecialAction({ type:'PICK_TARGET', actionType:'REVEALED_SNATCH_PICK_TARGET', exclude:[pidx] })
       },
       STUN_GRENADE: () => {
         const ok = sendAction({ type:'USE_STUN_GRENADE', ...base })
         if (!ok) return
-        playSound(SPECIAL_SOUND_MAP.STUN_GRENADE)
+        // Sound plays for all via SOUND_EVENT from server
         const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
         setSpecialAction({ type:'PICK_TARGET', actionType:'STUN_GRENADE_PICK', exclude:[pidx] })
       },
       NUKE: () => {
         const ok = sendAction({ type:'USE_NUKE', ...base })
         if (!ok) return
-        playSound(SPECIAL_SOUND_MAP.NUKE)
+        // Sound plays for all via SOUND_EVENT from server
         const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
         setSpecialAction({ type:'PICK_TARGET', actionType:'NUKE_PICK_TARGET', exclude:[pidx] })
       },
@@ -511,7 +522,7 @@ export function useGame() {
         const r = roomRef.current
         const ok = sendAction({ type:'USE_VITALS', ...base })
         if (!ok) return
-        playSound(SPECIAL_SOUND_MAP.VITALS)
+        // Sound plays for all via SOUND_EVENT from server
         const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
         setSpecialAction({ type:'VITALS_RESULT', data: computeVitals(r.players, myIdxRef.current) })
         setMustPassIfTurn()
@@ -521,7 +532,7 @@ export function useGame() {
         const reqSets = r.settings?.normalCount === 8 ? 2 : 1
         const ok = sendAction({ type:'USE_SUPER_VITALS', ...base })
         if (!ok) return
-        playSound(SPECIAL_SOUND_MAP.SUPER_VITALS)
+        // Sound plays for all via SOUND_EVENT from server
         const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
         setSpecialAction({ type:'SUPER_VITALS_RESULT', data: computeSuperVitals(r.players, myIdxRef.current, reqSets) })
         setMustPassIfTurn()
