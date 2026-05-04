@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { AVATAR_COLORS, MEDALS, SEAT_COLORS, isSpecial, chitDisplay } from '../utils/game.js'
 import { initials } from '../utils/helpers.js'
+import { playSound } from '../utils/sounds.js'
 
 // ── LoadingOverlay ────────────────────────────────────────────
 export function LoadingOverlay({ message = 'Loading…' }) {
@@ -134,12 +135,13 @@ export function HandCard({
       >
         <div className="hand-card-face hand-card-front" style={{
           ...faceBase,
+          justifyContent: special ? 'space-evenly' : 'center',
           border: `2px solid ${selected ? 'rgba(255,214,0,.6)' : special ? 'rgba(170,0,255,.5)' : 'rgba(255,255,255,.15)'}`,
           background: special ? 'linear-gradient(135deg,#6a0dad,#9c27b0)' : '#fff',
         }}>
-          <span style={{ fontSize: emojiSize, lineHeight: 1 }}>{display}</span>
+          <span style={{ fontSize: emojiSize, lineHeight: 1, flexShrink: 0 }}>{display}</span>
           {special && (
-            <span style={{ fontSize: 7, fontWeight: 900, color: 'rgba(255,255,255,.8)', textTransform: 'uppercase', letterSpacing: .4 }}>
+            <span className={`special-card-name${isStackedLayer ? ' special-card-name--sm' : ''}`}>
               {chit.name}
             </span>
           )}
@@ -243,13 +245,17 @@ export function PlayerSeat({ player, idx, myIdx, totalPlayers, isActive, isFroze
 }
 
 // ── reconcileDisplayOrder ─────────────────────────────────────
-function reconcileDisplayOrder(order, handLength) {
-  const valid   = order.filter(i => i >= 0 && i < handLength)
-  const missing = []
-  for (let i = 0; i < handLength; i++) {
-    if (!valid.includes(i)) missing.push(i)
-  }
-  return [...valid, ...missing]
+// Reconcile displayOrder (array of chit ids) against the current chits array.
+// • Cards that left: removed from order.
+// • Cards that arrived: appended at the end.
+// Stable ids (chit.id) prevent resets on every STATE_SYNC.
+function reconcileDisplayOrder(order, chits) {
+  const currentIds = chits.map(c => c.id).filter(Boolean)
+  // Keep existing ids that are still in hand
+  const kept    = order.filter(id => currentIds.includes(id))
+  // Append brand-new ids not yet tracked
+  const newIds  = currentIds.filter(id => !kept.includes(id))
+  return [...kept, ...newIds]
 }
 
 // ── useDragReorder ────────────────────────────────────────────
@@ -362,8 +368,9 @@ function useDragReorder({ displayOrder, setDisplayOrder, myRevealed, blocked, co
   // ── Per-card pointer down ───────────────────────────────────
   const onCardPointerDown = useCallback((e, visualIdx) => {
     if (blocked) return
-    const actualIdx = displayOrder[visualIdx]
-    if (!myRevealed[actualIdx]) return   // unrevealed → let tap reveal
+    // data-revealed is set by renderSlot; if false, let the tap-to-reveal handler fire
+    const slotEl = e.currentTarget
+    if (slotEl.dataset.revealed === 'false') return
 
     startX.current      = e.clientX
     startY.current      = e.clientY
@@ -377,7 +384,7 @@ function useDragReorder({ displayOrder, setDisplayOrder, myRevealed, blocked, co
       setDropIdx(null)
       try { containerRef.current?.setPointerCapture(e.pointerId) } catch {}
     }, 200)
-  }, [blocked, displayOrder, myRevealed, containerRef])
+  }, [blocked, containerRef])
 
   // ── Container-level pointer move ────────────────────────────
   const onContainerPointerMove = useCallback((e) => {
@@ -448,19 +455,20 @@ export function HandHud({
   const isStackedHand = chits.length > 8          // 9+ cards → two-layer fan
   const isLargeHand   = !isStackedHand && chits.length >= 7 // 7-8 → compact grid
 
-  // displayOrder[visualPos] = actual index into chits[]
+  // displayOrder[visualPos] = chit.id (stable across STATE_SYNC)
   const [displayOrder, setDisplayOrder] = useState(() =>
-    Array.from({ length: chits.length }, (_, i) => i)
+    chits.map(c => c.id).filter(Boolean)
   )
 
-  // Reconcile after hand size changes (pass/receive)
-  const prevHandLen = useRef(chits.length)
+  // Reconcile when hand changes (pass/receive) — preserves order, only adds/removes
+  const prevChitIds = useRef(chits.map(c => c.id).join(','))
   useEffect(() => {
-    if (chits.length !== prevHandLen.current) {
-      prevHandLen.current = chits.length
-      setDisplayOrder(prev => reconcileDisplayOrder(prev, chits.length))
+    const newKey = chits.map(c => c.id).join(',')
+    if (newKey !== prevChitIds.current) {
+      prevChitIds.current = newKey
+      setDisplayOrder(prev => reconcileDisplayOrder(prev, chits))
     }
-  }, [chits.length])
+  }, [chits])
 
   const containerRef = useRef(null)
 
@@ -482,27 +490,30 @@ export function HandHud({
   else if (phase==='playing')             hint = 'Tap once to reveal all 👀'
 
   // Shared card-slot renderer
+  // chitId     = the chit's stable id (stored in displayOrder)
   // visualIdx  = position in displayOrder (used for drag hit-test via data-vidx)
   // arcIndex   = position within its layer row (used for fan angle/lift calc)
   // layerLen   = total cards in that layer (for mid-point calc)
   // stackedLayer = true if inside a two-layer stacked hand
-  function renderSlot(actualIdx, visualIdx, arcIndex, layerLen, stackedLayer) {
+  function renderSlot(chitId, visualIdx, arcIndex, layerLen, stackedLayer) {
+    const actualIdx = chits.findIndex(c => c.id === chitId)
     const chit = chits[actualIdx]
-    if (!chit) return null
+    if (!chit || actualIdx === -1) return null
 
     const iAmDragging   = draggingIdx === visualIdx
     const iAmDropTarget = dropIdx === visualIdx && draggingIdx !== null && draggingIdx !== visualIdx
 
     return (
       <div
-        key={`slot-${actualIdx}`}
+        key={`slot-${chitId}`}
         ref={slotRef(actualIdx)}
-        data-vidx={visualIdx}
         className={[
           'hand-card-slot',
           iAmDragging   ? 'hc-dragging'    : '',
           iAmDropTarget ? 'hc-drop-target' : '',
         ].join(' ').trim()}
+        data-vidx={visualIdx}
+        data-revealed={myRevealed[actualIdx] ? 'true' : 'false'}
         onPointerDown={e => onCardPointerDown(e, visualIdx)}
         style={{ touchAction: 'none', userSelect: 'none' }}
       >
@@ -519,7 +530,12 @@ export function HandHud({
           isDragging={iAmDragging}
           onClick={() => {
             if (isDragging.current) return   // suppress click after drag
-            if (!blocked) onChitClick(actualIdx)
+            if (!blocked) {
+              // Sound: flip if not yet revealed, select if already revealed
+              if (!myRevealed[actualIdx]) playSound('cardFlip')
+              else playSound('cardSelect')
+              onChitClick(actualIdx)
+            }
           }}
         />
       </div>
@@ -550,13 +566,13 @@ export function HandHud({
         // ── 8+4 mode: two rows, each a fan of ≤6 cards ──
         <div className="hand-cards hand-cards--stacked" {...containerEvents}>
           <div className="hand-layer hand-layer--top">
-            {displayOrder.slice(0, 6).map((actualIdx, i) =>
-              renderSlot(actualIdx, i, i, Math.min(6, displayOrder.length), true)
+            {displayOrder.slice(0, 6).map((chitId, i) =>
+              renderSlot(chitId, i, i, Math.min(6, displayOrder.length), true)
             )}
           </div>
           <div className="hand-layer hand-layer--bottom">
-            {displayOrder.slice(6).map((actualIdx, i) =>
-              renderSlot(actualIdx, 6 + i, i, displayOrder.slice(6).length, true)
+            {displayOrder.slice(6).map((chitId, i) =>
+              renderSlot(chitId, 6 + i, i, displayOrder.slice(6).length, true)
             )}
           </div>
         </div>
@@ -566,8 +582,8 @@ export function HandHud({
           className={`hand-cards${isLargeHand ? ' hand-cards--large' : ''}`}
           {...containerEvents}
         >
-          {displayOrder.map((actualIdx, visualIdx) =>
-            renderSlot(actualIdx, visualIdx, visualIdx, displayOrder.length, false)
+          {displayOrder.map((chitId, visualIdx) =>
+            renderSlot(chitId, visualIdx, visualIdx, displayOrder.length, false)
           )}
           {chits.length === 0 && (
             <span style={{ color:'rgba(255,255,255,.4)', fontSize:13, fontWeight:800 }}>No chits</span>
@@ -586,13 +602,14 @@ export function HandHud({
           <button
             className="btn btn-blue btn-lg"
             disabled={selectedChit === -1 || blocked}
-            onClick={() => onPass(selectedChit)}
+            onClick={() => { playSound('button'); onPass(selectedChit) }}
           >
             {mustPassNormal ? '📤 Pass Normal' : amIStunned ? '🙈 Pass Blind' : '📤 Pass Chit'}
           </button>
         )}
         {phase==='playing' && canCallShow && !mustPassNormal && !amIStunned && (
-          <button className="btn btn-red btn-lg pulse" disabled={blocked} onClick={onCallShow}>
+          <button className="btn btn-red btn-lg pulse" disabled={blocked}
+            onClick={() => { playSound('show'); onCallShow() }}>
             🎉 SHOW!
           </button>
         )}
@@ -645,7 +662,8 @@ export function ShowWindowOverlay({ countdown, canJoinShow, hasJoinedShow, onJoi
       <div className="countdown-num bounce">{countdown}</div>
       <div className="countdown-label">seconds left</div>
       {canJoinShow && (
-        <button className="btn btn-red btn-xl pulse" style={{ marginTop:16 }} onClick={onJoinShow}>
+        <button className="btn btn-red btn-xl pulse" style={{ marginTop:16 }}
+          onClick={() => { playSound('show'); onJoinShow() }}>
           🎉 JOIN SHOW!
         </button>
       )}

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { isSpecial, chitDisplay, SEAT_COLORS } from '../utils/game.js'
 import { initials } from '../utils/helpers.js'
+import { playSound } from '../utils/sounds.js'
 
 // ── Shared modal wrapper ──────────────────────────────────────
 function Modal({ children, title, emoji, color = '#1E88E5' }) {
@@ -65,7 +66,7 @@ function PlayerBtn({ player, idx, onClick, icon }) {
   const normalCount = player.chits.filter(c => !isSpecial(c)).length
   const specCount   = player.chits.filter(c => isSpecial(c)).length
   return (
-    <button onClick={onClick} style={{
+    <button onClick={() => { playSound('button'); onClick() }} style={{
       display:'flex', alignItems:'center', gap:12,
       padding:'12px 16px', borderRadius:12, width:'100%',
       background:`${sc}18`, border:`1.5px solid ${sc}44`,
@@ -116,16 +117,16 @@ export function UseOrPassModal({ special, chitIdx, onUse, onPass, onCancel, isMy
         {descMap[special.type] ?? ''}
       </p>
       <div style={{ display:'flex', gap:10, justifyContent:'center', marginBottom:10 }}>
-        <button className="btn btn-green btn-lg" onClick={() => onUse(chitIdx, special)}>
+        <button className="btn btn-green btn-lg" onClick={() => { playSound('button'); onUse(chitIdx, special) }}>
           ✨ Use It
         </button>
         {canPass && (
-          <button className="btn btn-blue" onClick={() => onPass(chitIdx)}>
+          <button className="btn btn-blue" onClick={() => { playSound('button'); onPass(chitIdx) }}>
             📤 Pass It
           </button>
         )}
       </div>
-      <button className="btn btn-ghost" style={{ width:'100%' }} onClick={onCancel}>Cancel</button>
+      <button className="btn btn-ghost" style={{ width:'100%' }} onClick={() => { playSound('button'); onCancel() }}>Cancel</button>
     </Modal>
   )
 }
@@ -318,7 +319,7 @@ export function NukePickCardModal({ targetIdx, specials, players, onPick }) {
       )}
       <button className="btn btn-red" style={{ width:'100%' }}
         disabled={sel===-1 || specials.length===0}
-        onClick={() => onPick(specials.find(s=>s.i===sel)?.i ?? sel)}>
+        onClick={() => { playSound('button'); onPick(specials.find(s=>s.i===sel)?.i ?? sel) }}>
         💣 Nuke It!
       </button>
     </Modal>
@@ -357,7 +358,7 @@ export function VitalsModal({ data, onClose }) {
           <p style={{ textAlign:'center', color:'rgba(255,255,255,.4)', fontSize:13 }}>No data available.</p>
         )}
       </div>
-      <button className="btn btn-green" style={{ width:'100%' }} onClick={onClose}>Got it!</button>
+      <button className="btn btn-green" style={{ width:'100%' }} onClick={() => { playSound('button'); onClose() }}>Got it!</button>
     </Modal>
   )
 }
@@ -399,7 +400,7 @@ export function SuperVitalsModal({ data, onClose }) {
           })}
         </div>
       )}
-      <button className="btn btn-yellow" style={{ width:'100%' }} onClick={onClose}>Got it!</button>
+      <button className="btn btn-yellow" style={{ width:'100%' }} onClick={() => { playSound('button'); onClose() }}>Got it!</button>
     </Modal>
   )
 }

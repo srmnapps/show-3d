@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { WsStatus } from './UI.jsx'
 import { AVATAR_COLORS, SEAT_COLORS, SPECIALS } from '../utils/game.js'
 import { initials, copyToClipboard } from '../utils/helpers.js'
+import { playSound } from '../utils/sounds.js'
 
 // ── Landing Page ──────────────────────────────────────────────
 export function LandingPage({ onPlay }) {
@@ -60,7 +61,7 @@ export function LandingPage({ onPlay }) {
           </div>
 
           {!showPlay ? (
-            <button className="btn btn-green btn-xl" onClick={() => setShowPlay(true)}>
+            <button className="btn btn-green btn-xl" onClick={() => { playSound('button'); setShowPlay(true) }}>
               🎮 Play Now
             </button>
           ) : (
@@ -77,7 +78,7 @@ export function LandingPage({ onPlay }) {
                 disabled={!t} onClick={() => onPlay(t)}>
                 ✦ Let's Play!
               </button>
-              <button className="btn btn-ghost" style={{ width:'100%' }} onClick={() => setShowPlay(false)}>
+              <button className="btn btn-ghost" style={{ width:'100%' }} onClick={() => { playSound('button'); setShowPlay(false) }}>
                 ← Back
               </button>
             </div>
@@ -141,6 +142,26 @@ export function LandingPage({ onPlay }) {
             <div className="rule-icon">✨</div>
             <div className="rule-title" style={{ color:'#CC44FF' }}>Special Mode</div>
             <div className="rule-desc">4 normal + 2 random specials. Chaos, strategy and surprises!</div>
+          </div>
+        </div>
+
+        {/* Smart Bots */}
+        <h2 className="how-title" style={{ marginTop:8 }}>🤖 Smart Bots</h2>
+        <div className="rules-grid" style={{ gridTemplateColumns:'1fr' }}>
+          <div className="rule-card" style={{ borderColor:'rgba(67,160,71,.35)', background:'rgba(67,160,71,.07)' }}>
+            <div style={{ display:'flex', flexWrap:'wrap', gap:16, justifyContent:'center' }}>
+              {[
+                { icon:'➕', text:'Add bots before starting to fill empty seats' },
+                { icon:'🔄', text:'Disconnected players are instantly bot-controlled' },
+                { icon:'🧠', text:'Bots keep matching cards, pass weak ones, call SHOW when ready' },
+                { icon:'🚪', text:'No bot-only rooms — empty lobbies clean up automatically' },
+              ].map(({ icon, text }) => (
+                <div key={text} style={{ display:'flex', alignItems:'flex-start', gap:10, minWidth:200, flex:'1 1 200px' }}>
+                  <span style={{ fontSize:20, flexShrink:0 }}>{icon}</span>
+                  <span style={{ fontSize:13, color:'rgba(255,255,255,.75)', fontWeight:700, lineHeight:1.4 }}>{text}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -286,6 +307,7 @@ export function JoinScreen({ name, onJoin, onBack, errorMsg, initialCode = '' })
 
   async function go() {
     if (!code.trim() || !effectiveName) return
+    playSound('button')
     setBusy(true)
     await onJoin(code.trim().toUpperCase(), needsName ? localName.trim() : undefined, () => setBusy(false))
   }
@@ -337,6 +359,7 @@ export function LobbyScreen({ room, me, isHost, wsStatus, onStart, onLeave, onSe
   const [specsOpen, setSpecsOpen] = useState(() => window.innerWidth >= 900)
 
   async function doCopy() {
+    playSound('button')
     await copyToClipboard(room.code)
     setCopied(true)
     setTimeout(() => setCopied(false), 1600)

@@ -42,14 +42,43 @@ export function loadSession(roomCode) {
   return null
 }
 
-// ── URL helpers ────────────────────────────────────────────────
-export function setRoomUrl(roomCode) {
-  const url = roomCode ? `?room=${roomCode}` : window.location.pathname
-  window.history.replaceState({}, '', url)
+// ── URL helpers (path-based SPA routing) ──────────────────────
+
+/**
+ * Extract roomCode from path like /room/XXXX.
+ * Returns null if path doesn't match.
+ */
+export function getRoomCodeFromPath() {
+  const m = window.location.pathname.match(/^\/room\/([^/]+)/)
+  return m ? m[1].toUpperCase() : null
 }
 
-export function getRoomFromUrl() {
-  return new URLSearchParams(window.location.search).get('room') ?? null
+/**
+ * Navigate to /room/<roomCode> using pushState.
+ * Marks the history entry with { showScreen: 'room', roomCode }.
+ */
+export function navigateToRoom(roomCode) {
+  const path = `/room/${roomCode}`
+  if (window.location.pathname !== path) {
+    window.history.pushState(
+      { showScreen: 'room', roomCode },
+      '',
+      path,
+    )
+  }
+}
+
+/**
+ * Navigate to / using pushState.
+ */
+export function navigateHome() {
+  if (window.location.pathname !== '/') {
+    window.history.pushState(
+      { showScreen: 'home' },
+      '',
+      '/',
+    )
+  }
 }
 
 // ── Hook ──────────────────────────────────────────────────────
