@@ -10,16 +10,54 @@ import {
   LandingPage, CreateJoinScreen, JoinScreen, LobbyScreen, PublicLobbyScreen,
 } from './components/Screens.jsx'
 import { InGameMenu, ConfirmModal, HowToPlayModal } from './components/ingamemenu.jsx'
+import {
+  initAudio, playSound, getSoundEnabled, setSoundEnabled,
+  getAmbienceEnabled, setAmbienceEnabled,
+  playAmbience, stopAmbience, chooseGameLoop, resetGameLoop,
+  withButtonSound,
+} from './utils/sounds.js'
 
 const GAME_PHASES = [
   'playing','showWindow','afterShow','roundEnd',
   'pendingSpecial','blindSnatchPicking','revealedSnatchPicking','nukePicking',
 ]
 
+// ── Path helpers (mirrors useWebSocket.js, no import needed here) ──
+function getRoomCodeFromPath() {
+  const m = window.location.pathname.match(/^\/room\/([^/]+)/)
+  return m ? m[1].toUpperCase() : null
+}
+
+// ── Derive initial screen from current URL ─────────────────────
+function getInitialScreen() {
+  const path = window.location.pathname
+  if (path === '/join') return 'createjoin'
+  if (getRoomCodeFromPath()) return 'room-loading' // resolved after mount
+  return 'landing'
+}
+
 export default function App() {
-  const [screen,     setScreen]     = useState('landing')
+  const [screen,     setScreen]     = useState(getInitialScreen)
   const [playerName, setPlayerName] = useState('')
   const canvasRef = useRef(null)
+
+  // ── Sound state ─────────────────────────────────────────────
+  const [soundOn,    setSoundOn]    = useState(() => getSoundEnabled())
+  const [ambienceOn, setAmbienceOn] = useState(() => getAmbienceEnabled())
+
+  useEffect(() => { initAudio() }, [])
+
+  function toggleSound() {
+    const next = !soundOn
+    setSoundOn(next)
+    setSoundEnabled(next)
+  }
+
+  function toggleAmbience() {
+    const next = !ambienceOn
+    setAmbienceOn(next)
+    setAmbienceEnabled(next)
+  }
 
   // ── In-game menu / modal state ──────────────────────────────
   const [menuOpen,        setMenuOpen]        = useState(false)
@@ -27,9 +65,12 @@ export default function App() {
   const [leaveConfirm,    setLeaveConfirm]    = useState(false)
   const [restartConfirm,  setRestartConfirm]  = useState(false)
 
-  // Track whether we're in-game for back-navigation guard
+  // Track screen in ref for use inside event listeners
   const screenRef = useRef(screen)
   useEffect(() => { screenRef.current = screen }, [screen])
+
+  // Ensure we never push duplicate sentinel entries
+  const sentinelPushedRef = useRef(false)
 
   const {
     me, room, logs, myIdx, selectedChit, setSelectedChit,
@@ -50,7 +91,53 @@ export default function App() {
 
   const phase = room?.phase
 
-  // ── Screen routing ────────────────────────────────────────
+  // ── Ambience by screen / phase ────────────────────────────
+  useEffect(() => {
+    const lobbyScreens = ['landing', 'room-loading', 'createjoin', 'join', 'browse', 'lobby']
+    const resultPhases = ['afterShow', 'roundEnd', 'ended']
+    const gameActivePhases = [
+      'playing','showWindow','pendingSpecial',
+      'blindSnatchPicking','revealedSnatchPicking','nukePicking',
+    ]
+
+    if (lobbyScreens.includes(screen)) {
+      playAmbience('lobby')
+      resetGameLoop()
+    } else if (screen === 'end') {
+      playAmbience('result')
+    } else if (screen === 'game') {
+      if (phase && resultPhases.includes(phase)) {
+        playAmbience('result')
+      } else if (phase && gameActivePhases.includes(phase)) {
+        playAmbience(chooseGameLoop())
+      }
+    }
+  }, [screen, phase])
+
+  // ── Inject SPA history on first load at /room/:code ────────
+  // If the user opened /room/XYZ directly, browser history has no /
+  // as a prior entry. We fix this once by replacing + re-pushing.
+  useEffect(() => {
+    const roomCode = getRoomCodeFromPath()
+    if (!roomCode) return
+    // Only inject if there's no app marker in current history state
+    if (window.history.state?.showAppEntry) return
+
+    // 1. Replace current entry with home
+    window.history.replaceState(
+      { showScreen: 'home', showAppEntry: true },
+      '',
+      '/',
+    )
+    // 2. Push the room entry back
+    window.history.pushState(
+      { showScreen: 'room', roomCode, showRoomEntry: true },
+      '',
+      `/room/${roomCode}`,
+    )
+  }, []) // mount only
+
+  // ── Screen routing from server phase ─────────────────────────
   useEffect(() => {
     if (!phase) return
     if (phase === 'lobby') setScreen('lobby')
@@ -58,41 +145,78 @@ export default function App() {
     if (phase === 'ended') setScreen('end')
   }, [phase])
 
+  // ── When initialRoomCode is set (no session, direct link) ────
   useEffect(() => {
-    if (initialRoomCode && screen === 'landing') {
+    if (initialRoomCode && (screen === 'landing' || screen === 'room-loading')) {
       setScreen('join')
     }
   }, [initialRoomCode, screen])
 
-  // ── Browser back-button guard ─────────────────────────────
-  // We push a sentinel history entry when entering the game,
-  // and intercept popstate to show a confirmation instead of navigating.
+  // ── If room-loading screen never resolved (no session, no code) ─
   useEffect(() => {
-    // Push sentinel when entering game or lobby
+    if (screen === 'room-loading' && !initialRoomCode && !room) {
+      // Give the mount effect a tick to set initialRoomCode
+      const t = setTimeout(() => {
+        if (screenRef.current === 'room-loading') setScreen('landing')
+      }, 500)
+      return () => clearTimeout(t)
+    }
+  }, [screen, initialRoomCode, room])
+
+  // ── Push sentinel when entering game/lobby ──────────────────
+  useEffect(() => {
     if (screen === 'game' || screen === 'lobby') {
-      window.history.pushState({ show_sentinel: true }, '')
+      if (!sentinelPushedRef.current) {
+        window.history.pushState({ show_sentinel: true }, '')
+        sentinelPushedRef.current = true
+      }
+    } else {
+      sentinelPushedRef.current = false
     }
   }, [screen])
 
+  // ── popstate: intercept back in game/lobby ──────────────────
   useEffect(() => {
     function handlePopState(e) {
       const s = screenRef.current
+
+      // If we're in game or lobby, block navigation and confirm
       if (s === 'game' || s === 'lobby') {
-        // Re-push sentinel so further back presses keep triggering this
+        // Re-push sentinel so next back press also triggers this
         window.history.pushState({ show_sentinel: true }, '')
         setLeaveConfirm(true)
+        return
+      }
+
+      // For other screens, let the path decide which screen to show
+      const path = window.location.pathname
+      if (path === '/' || path === '') {
+        setScreen('landing')
+      } else if (path === '/join') {
+        setScreen('createjoin')
+      } else if (getRoomCodeFromPath()) {
+        // Navigated back/forward to a room URL — handled by room load
+        // If we have no room, treat as landing
+        if (!roomRef.current) setScreen('landing')
       }
     }
+
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
   }, [])
 
-  // ── Navigation helpers ────────────────────────────────────
+  // Keep a ref to room for use in popstate (avoids stale closure)
+  const roomRef = useRef(room)
+  useEffect(() => { roomRef.current = room }, [room])
+
+  // ── Navigation helpers ────────────────────────────────────────
   function goHome() {
     leaveRoom()
     setScreen('landing')
     setMenuOpen(false)
     setLeaveConfirm(false)
+    sentinelPushedRef.current = false
+    // leaveRoom() calls navigateHome() internally
   }
 
   function confirmLeaveRoom() {
@@ -100,47 +224,73 @@ export default function App() {
     setMenuOpen(false)
   }
 
-  function onPlay(name) { setPlayerName(name); setScreen('createjoin') }
+  function onPlay(name) {
+    playSound('button')
+    setPlayerName(name)
+    setScreen('createjoin')
+    window.history.pushState({ showScreen: 'createjoin' }, '', '/join')
+  }
 
   async function onCreate() {
+    playSound('loadingStart')
     await createRoom(playerName, false)
+    // navigateToRoom called inside useGame on ROOM_CREATED
   }
 
   async function onCreatePublic() {
+    playSound('loadingStart')
     await createRoom(playerName, true)
   }
 
   function onBrowse() {
+    playSound('button')
     connectForBrowsing(playerName)
     setScreen('browse')
   }
 
-  function onGoJoin() { setScreen('join') }
+  function onGoJoin() { playSound('button'); setScreen('join') }
 
   async function onJoin(code, nameOverride, done) {
+    playSound('loadingStart')
     const effectiveName = nameOverride ?? playerName
     if (!effectiveName) { done?.(); return }
     if (nameOverride) setPlayerName(nameOverride)
     try { await joinRoom(effectiveName, code) }
     catch {} finally { done?.() }
+    // navigateToRoom called inside useGame on JOINED_ROOM
   }
 
-  function onLeave() { leaveRoom(); setScreen('landing') }
-  function onBack()  { setScreen(screen === 'join' ? 'createjoin' : 'landing') }
+  function onLeave() {
+    playSound('button')
+    leaveRoom()
+    setScreen('landing')
+    sentinelPushedRef.current = false
+  }
 
-  // ── Host restart (play again from in-game menu) ───────────
+  function onBack() {
+    const prev = screen === 'join' ? 'createjoin' : 'landing'
+    setScreen(prev)
+    if (prev === 'landing') {
+      window.history.pushState({ showScreen: 'home' }, '', '/')
+    }
+  }
+
+  // ── Host restart ──────────────────────────────────────────────
   function handleMenuRestart() {
+    playSound('button')
     setRestartConfirm(true)
     setMenuOpen(false)
   }
 
   function confirmRestart() {
+    playSound('button')
     playAgain()
     setRestartConfirm(false)
   }
 
-  // ── Host end game from menu ───────────────────────────────
+  // ── Host end game from menu ───────────────────────────────────
   function handleMenuEndGame() {
+    playSound('button')
     endGame()
     setMenuOpen(false)
   }
@@ -154,9 +304,10 @@ export default function App() {
       {stunFlash && <div className="stun-flash" />}
 
       {loading && <LoadingOverlay message={
-        screen === 'join'   ? 'Joining room…'
-        : screen === 'lobby'  ? 'Starting game…'
-        : screen === 'browse' ? 'Loading rooms…'
+        screen === 'join'         ? 'Joining room…'
+        : screen === 'lobby'      ? 'Starting game…'
+        : screen === 'browse'     ? 'Loading rooms…'
+        : screen === 'room-loading' ? 'Loading room…'
         : 'Please wait…'
       } />}
 
@@ -192,7 +343,7 @@ export default function App() {
 
       <div id="ui-root">
 
-        {screen === 'landing' && <LandingPage onPlay={onPlay} />}
+        {(screen === 'landing' || screen === 'room-loading') && <LandingPage onPlay={onPlay} />}
 
         {screen === 'createjoin' && (
           <CreateJoinScreen
@@ -201,7 +352,10 @@ export default function App() {
             onCreatePublic={onCreatePublic}
             onGoJoin={onGoJoin}
             onBrowse={onBrowse}
-            onBack={() => setScreen('landing')}
+            onBack={() => {
+              setScreen('landing')
+              window.history.pushState({ showScreen: 'home' }, '', '/')
+            }}
           />
         )}
 
@@ -229,12 +383,12 @@ export default function App() {
         {screen === 'lobby' && room && (
           <LobbyScreen
             room={room} me={me} isHost={isHost} wsStatus={wsStatus}
-            onStart={startGame} onLeave={onLeave} onSetMode={setMode}
+            onStart={() => { playSound('loadingStart'); startGame() }} onLeave={onLeave} onSetMode={setMode}
             setHandSetup={setHandSetup} setEnabledSpecials={setEnabledSpecials}
             isPublic={isPublic}
-            onToggleVisibility={toggleVisibility}
-            onAddBot={addBot}
-            onRemoveBot={removeBot}
+            onToggleVisibility={withButtonSound(toggleVisibility)}
+            onAddBot={withButtonSound(addBot)}
+            onRemoveBot={(i) => { playSound('button'); removeBot(i) }}
           />
         )}
 
@@ -259,10 +413,30 @@ export default function App() {
                 {/* ── Settings / menu button ── */}
                 <button
                   className="ingame-menu-btn"
-                  onClick={() => setMenuOpen(o => !o)}
+                  onClick={() => { playSound('button'); setMenuOpen(o => !o) }}
                   aria-label="Game menu"
                 >
                   ⋮
+                </button>
+                {/* ── Sound toggle ── */}
+                <button
+                  className="ingame-menu-btn"
+                  onClick={toggleSound}
+                  aria-label={soundOn ? 'Mute SFX' : 'Unmute SFX'}
+                  title={soundOn ? 'SFX: On' : 'SFX: Off'}
+                  style={{ fontSize: 14 }}
+                >
+                  {soundOn ? '🔊' : '🔇'}
+                </button>
+                {/* ── Ambience toggle ── */}
+                <button
+                  className="ingame-menu-btn"
+                  onClick={toggleAmbience}
+                  aria-label={ambienceOn ? 'Mute music' : 'Unmute music'}
+                  title={ambienceOn ? 'Music: On' : 'Music: Off'}
+                  style={{ fontSize: 14 }}
+                >
+                  {ambienceOn ? '🎵' : '🎵' /* same icon, dimmed via title */}
                 </button>
               </div>
             </div>
@@ -321,7 +495,9 @@ export default function App() {
             )}
 
             {phase==='roundEnd' && (
-              <RoundEndControls isHost={isHost} onNextRound={nextRound} onEndGame={endGame} />
+              <RoundEndControls isHost={isHost}
+                onNextRound={withButtonSound(nextRound)}
+                onEndGame={withButtonSound(endGame)} />
             )}
 
             {!['showWindow','afterShow'].includes(phase) && (
@@ -370,7 +546,9 @@ export default function App() {
         )}
 
         {screen === 'end' && room && (
-          <EndScreen room={room} onPlayAgain={playAgain} onLeave={onLeave} />
+          <EndScreen room={room}
+            onPlayAgain={withButtonSound(playAgain)}
+            onLeave={onLeave} />
         )}
 
       </div>
