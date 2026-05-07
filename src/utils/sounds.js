@@ -33,7 +33,7 @@ export const setSoundVolume  = setSfxVolume
 export function setAmbienceEnabled(v) {
   _save(LS_AMBIENCE_ENABLED, v)
   if (!v) _pauseAllAmbience()
-  else if (_wantAmb) _doPlayAmbience(_wantAmb)
+  else if (_wantAmb && _unlocked) _doPlayAmbience(_wantAmb)
 }
 export function setAmbienceVolume(v) {
   _save(LS_AMBIENCE_VOLUME, v)
@@ -86,77 +86,7 @@ let _initDone = false
 let _wantAmb  = null
 const _ambEls = {}
 
-function _markUnlocked() {
-  if (_unlocked) return
-  _unlocked = true
-  setTimeout(() => {
-    if (_wantAmb && getAmbienceEnabled()) _doPlayAmbience(_wantAmb)
-  }, 0)
-}
-
-// ── initAudio ─────────────────────────────────────────────────────
-export function initAudio() {
-  if (_initDone) return
-  _initDone = true
-
-  // Nothing extra needed — prefs are read from localStorage on every call.
-
-  // Desktop: try AudioContext — if already running, unlock now
-  try {
-    const Ctx = window.AudioContext || window.webkitAudioContext
-    if (Ctx) {
-      const ctx = new Ctx()
-      if (ctx.state === 'running') _markUnlocked()
-      ctx.close()
-    }
-  } catch (e) {
-  }
-
-  function _handler() {
-    _markUnlocked()
-    ;['pointerdown','mousedown','click','keydown','touchstart'].forEach(e =>
-      document.removeEventListener(e, _handler, true)
-    )
-  }
-  ;['pointerdown','mousedown','click','keydown','touchstart'].forEach(e =>
-    document.addEventListener(e, _handler, true)
-  )
-}
-
-export function unlockAudio() { _markUnlocked() }
-
-// ── playSound ─────────────────────────────────────────────────────
-export function playSound(name) {
-  // Always unlock on any playSound call — it's always inside a user gesture
-  _markUnlocked()
-
-  if (!getSfxEnabled()) {
-    return
-  }
-
-  const src = SOUND_FILES[name]
-  if (!src) {
-    console.warn('[SFX] unknown key:', name)
-    return
-  }
-
-
-  try {
-    const el  = new Audio(src)
-    el.volume = getSfxVolume()
-    const p   = el.play()
-    if (p?.catch) p.catch(err => console.error('[SFX ERROR]', name, err.name, err.message))
-  } catch (err) {
-    console.error('[SFX EXCEPTION]', name, err)
-  }
-}
-
-export function playSpecial(type) {
-  const name = SPECIAL_SOUND_MAP[type]
-  if (name) playSound(name)
-}
-
-// ── Ambience ──────────────────────────────────────────────────────
+// ── Ambience internals (defined early — used by unlock) ───────────
 function _getAmbEl(name) {
   if (_ambEls[name]) return _ambEls[name]
   const src = AMBIENCE_FILES[name]
@@ -176,24 +106,101 @@ function _pauseAllAmbience() {
 }
 
 function _doPlayAmbience(name) {
+  // Pause all other tracks
   Object.entries(_ambEls).forEach(([n, el]) => {
     if (n !== name) try { if (!el.paused) { el.pause(); el.currentTime = 0 } } catch {}
   })
   const el = _getAmbEl(name)
   if (!el) return
   el.volume = getAmbienceVolume()
-  if (!el.paused) return
+  if (!el.paused) return   // already playing
   const p = el.play()
   if (p?.catch) p.catch(err => console.error('[AMBIENCE ERROR]', name, err.name, err.message))
 }
 
+// ── Unlock ────────────────────────────────────────────────────────
+// CRITICAL for mobile: ambience must be started SYNCHRONOUSLY inside
+// the gesture handler, not in a setTimeout. iOS/Android block audio
+// started from async callbacks even if a gesture recently happened.
+function _markUnlocked() {
+  if (_unlocked) return
+  _unlocked = true
+  // Start ambience synchronously — still within the gesture call stack
+  if (_wantAmb && getAmbienceEnabled()) {
+    _doPlayAmbience(_wantAmb)
+  }
+}
+
+// ── initAudio ─────────────────────────────────────────────────────
+export function initAudio() {
+  if (_initDone) return
+  _initDone = true
+
+  // Desktop: AudioContext already running → unlock immediately
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext
+    if (Ctx) {
+      const ctx = new Ctx()
+      if (ctx.state === 'running') _markUnlocked()
+      ctx.close()
+    }
+  } catch {}
+
+  // Capture-phase listeners — fire before React, named fn for correct removeEventListener
+  function _handler() {
+    _markUnlocked()
+    ;['pointerdown','mousedown','click','keydown','touchstart'].forEach(e =>
+      document.removeEventListener(e, _handler, true)
+    )
+  }
+  ;['pointerdown','mousedown','click','keydown','touchstart'].forEach(e =>
+    document.addEventListener(e, _handler, true)
+  )
+}
+
+// ── unlockAudio — call from any button handler for explicit unlock ─
+export function unlockAudio() { _markUnlocked() }
+
+// ── playSound ─────────────────────────────────────────────────────
+// Always called from inside a user gesture handler, so _markUnlocked()
+// here is synchronous and satisfies the browser's autoplay policy.
+export function playSound(name) {
+  // Unlock synchronously — we are inside a gesture handler
+  _markUnlocked()
+
+  if (!getSfxEnabled()) return
+
+  const src = SOUND_FILES[name]
+  if (!src) { console.warn('[SFX] unknown key:', name); return }
+
+  try {
+    const el  = new Audio(src)
+    el.volume = getSfxVolume()
+    const p   = el.play()
+    if (p?.catch) p.catch(err => console.error('[SFX ERROR]', name, err.name, err.message))
+  } catch (err) {
+    console.error('[SFX EXCEPTION]', name, err)
+  }
+}
+
+export function playSpecial(type) {
+  const name = SPECIAL_SOUND_MAP[type]
+  if (name) playSound(name)
+}
+
+// ── playAmbience ─────────────────────────────────────────────────
+// Idempotent — repeated calls with same name while playing = no-op.
 export function playAmbience(name) {
   if (!name) return
   const existing = _ambEls[name]
-  if (existing && !existing.paused && _wantAmb === name) return
+  if (existing && !existing.paused && _wantAmb === name) return  // already playing
   _wantAmb = name
   if (!getAmbienceEnabled()) { _pauseAllAmbience(); return }
-  if (!_unlocked) { _pauseAllAmbience(); return }
+  if (!_unlocked) {
+    // Not yet unlocked — intent stored, will start synchronously on first gesture
+    _pauseAllAmbience()
+    return
+  }
   _doPlayAmbience(name)
 }
 
