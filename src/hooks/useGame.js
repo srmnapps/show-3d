@@ -1,11 +1,8 @@
-// show-3d/src/hooks/useGame.js
-// Server-authoritative + per-room sessions + URL routing + bot UI + offline safety
-
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { useWebSocket, saveSession, clearSession, loadSession, navigateToRoom, navigateHome, getRoomCodeFromPath } from './useWebSocket.js'
-import { isShowHand, isSpecial, SPECIAL_CONFIG } from '../utils/game.js'
-import { uid } from '../utils/helpers.js'
-import { playSound } from '../utils/sounds.js'
+import { useWebSocket } from './useWebSocket.js'
+import { applyAction, makeRoom, makePlayer, isShowHand, isSpecial, SPECIAL_CONFIG } from '../utils/game.js'
+import { uid, generateRoomCode } from '../utils/helpers.js'
+import { playSound, playAmbience, chooseGameLoop, resetGameLoop } from '../utils/sounds.js'
 
 export function useGame() {
   const [me,             setMe]            = useState({ id: '', name: '' })
@@ -21,38 +18,46 @@ export function useGame() {
   const [mustPassNormal, setMustPassNormal]= useState(false)
   const [stunFlash,      setStunFlash]     = useState(false)
   const [isStunned,      setIsStunned]     = useState(false)
-  const [specialAction,  setSpecialAction] = useState(null)
-  const [initialRoomCode,setInitialRoomCode] = useState('')
 
-  // ── Public lobby state ────────────────────────────────────
-  const [publicRooms, setPublicRooms] = useState([])
-  const [isPublic,    setIsPublic]    = useState(false)
+  // vitalsResult: null | { type: 'vitals'|'superVitals', data: [...] }
+  const [vitalsResult,   setVitalsResult]  = useState(null)
 
-  const roomRef            = useRef(null)
-  const logsRef            = useRef([])
-  const myIdxRef           = useRef(-1)
-  const meRef              = useRef(me)
-  const myRevealedRef      = useRef([])
-  const countdownTimer     = useRef(null)
-  const nextPlayerIdxRef   = useRef(-1)
+  // specialAction drives all modals
+  const [specialAction, setSpecialAction]  = useState(null)
+
+  const roomRef           = useRef(null)
+  const logsRef           = useRef([])
+  const myIdxRef          = useRef(-1)
+  const meRef             = useRef({ id: '', name: '' })
+  const myRevealedRef     = useRef([])
+  const resolveTimerRef   = useRef(null)
+  const countdownTimer    = useRef(null)
+  const nextPlayerIdxRef  = useRef(-1)
   const autoRevealTimerRef = useRef([])
-  const prevPhaseRef       = useRef(null)
-  const prevLogsLenRef     = useRef(0)
+  // Sound refs
+  const prevTurnRef       = useRef(null)   // tracks last known currentTurn to avoid re-firing
+  const gameAmbienceRef   = useRef(null)   // stable game loop choice per session
 
   const { connect, send, disconnect } = useWebSocket()
 
-  const updateRoom       = r => { roomRef.current = r;       setRoom(r)  }
-  const updateLogs       = l => { logsRef.current = l;       setLogs(l)  }
-  const updateMyIdx      = i => { myIdxRef.current = i;      setMyIdx(i) }
-  const updateMe         = m => { meRef.current = m;         setMe(m)    }
-  const updateMyRevealed = r => { myRevealedRef.current = r; setMyRevealed(r) }
+  const updateRoom      = r => { roomRef.current = r;       setRoom(r) }
+  const updateLogs      = l => { logsRef.current = l;       setLogs(l) }
+  const updateMyIdx     = i => { myIdxRef.current = i;      setMyIdx(i) }
+  const updateMe        = m => { meRef.current = m;         setMe(m) }
+  const updateMyRevealed= r => { myRevealedRef.current = r; setMyRevealed(r) }
 
   // ── Derived ──────────────────────────────────────────────
-  const isHost     = room?.hostId === me.id
-  const myPlayer   = room?.players[myIdx]
-  const isMyTurn   = room?.currentTurn === myIdx
-  const turnPlayer = room?.players[room?.currentTurn]
-  const showAll    = ['afterShow','roundEnd','ended'].includes(room?.phase)
+  const isHost        = room?.hostId === me.id
+  const myPlayer      = room?.players[myIdx]
+  const myPuppetInfo  = room?.puppeteerInfo
+  const amIPuppeteer  = myPuppetInfo?.puppeteerIdx === myIdx && myPuppetInfo?.active === true
+  const amIPuppeted   = myPuppetInfo?.targetIdx === myIdx && myPuppetInfo?.active === true
+  const puppetTarget  = amIPuppeteer ? room?.players[myPuppetInfo.targetIdx] : null
+  const actingIdx     = amIPuppeteer ? myPuppetInfo.targetIdx : myIdx
+  const actingPlayer  = room?.players[actingIdx]
+  const isMyTurn      = room?.currentTurn === myIdx || (amIPuppeteer && room?.currentTurn === myPuppetInfo.targetIdx)
+  const turnPlayer    = room?.players[room?.currentTurn]
+  const showAll       = ['afterShow','roundEnd','ended'].includes(room?.phase)
   const hasJoinedShow = room?.showClicks?.some(c => c.playerIdx === myIdx) ?? false
   const canJoinShow   = room?.phase === 'showWindow' && !hasJoinedShow
   const requiredShowSets = room?.settings?.normalCount === 8 ? 2 : 1
@@ -61,9 +66,7 @@ export function useGame() {
     && isShowHand(myPlayer?.chits ?? [], requiredShowSets)
   const amIStunned    = room?.stunnedPlayer === myIdx
 
-  const nextPlayerIdx = room
-    ? ((room.currentTurn + room.direction + room.players.length) % room.players.length)
-    : -1
+  const nextPlayerIdx = room ? ((room.currentTurn + room.direction + room.players.length) % room.players.length) : -1
   nextPlayerIdxRef.current = nextPlayerIdx
 
   // ── isSpecialUsableNow ───────────────────────────────────
@@ -74,15 +77,16 @@ export function useGame() {
     return isMyTurn
   }, [isMyTurn])
 
-  // ── isTurnNow ────────────────────────────────────────────
+  // ── isTurnNow (ref-based, safe inside callbacks) ─────────
   const isTurnNow = () => {
-    const r   = roomRef.current
+    const r = roomRef.current
     const myI = myIdxRef.current
     if (!r) return false
-    return r.currentTurn === myI
+    if (r.currentTurn === myI) return true
+    return !!(r.effects?.find(e => e.type === 'PUPPETEER' && e.ownerIdx === myI && e.targetIdx === r.currentTurn))
   }
 
-  // ── Auto-reveal ──────────────────────────────────────────
+  // ── Auto-reveal all cards with CSS-driven stagger ────────
   const revealAllMyCardsWithAnimation = useCallback(() => {
     autoRevealTimerRef.current.forEach(clearTimeout)
     autoRevealTimerRef.current = []
@@ -93,7 +97,7 @@ export function useGame() {
   // ── syncRevealed ─────────────────────────────────────────
   const syncRevealed = useCallback((prevCount) => {
     const newCount = roomRef.current?.players[myIdxRef.current]?.chits?.length ?? 0
-    const cur      = myRevealedRef.current
+    const cur = myRevealedRef.current
     if (newCount > cur.length) {
       updateMyRevealed([...cur, ...Array(newCount - cur.length).fill(false)])
     } else if (newCount < cur.length) {
@@ -103,7 +107,8 @@ export function useGame() {
 
   // ── Countdown ────────────────────────────────────────────
   const clearCountdown = useCallback(() => {
-    if (countdownTimer.current) { clearInterval(countdownTimer.current); countdownTimer.current = null }
+    if (countdownTimer.current)  { clearInterval(countdownTimer.current);  countdownTimer.current  = null }
+    if (resolveTimerRef.current) { clearTimeout(resolveTimerRef.current);  resolveTimerRef.current = null }
     setCountdown(0)
   }, [])
 
@@ -113,7 +118,7 @@ export function useGame() {
     tick(); countdownTimer.current = setInterval(tick, 250)
   }, [clearCountdown])
 
-  // ── Stun flash ───────────────────────────────────────────
+  // ── Stun flash ────────────────────────────────────────────
   const triggerStunFlash = useCallback(() => {
     setStunFlash(true)
     setTimeout(() => setStunFlash(false), 600)
@@ -122,7 +127,7 @@ export function useGame() {
     setIsStunned(true)
   }, [])
 
-  // ── Super Vitals alert ───────────────────────────────────
+  // ── Super Vitals alert (only fires for the player who activated Super Vitals) ──
   const fireSuperVitalsAlert = useCallback((room, playerIdx) => {
     if (room.superVitalsAlert?.ownerIdx !== myIdxRef.current) return
     const p = room.players[playerIdx]
@@ -133,275 +138,216 @@ export function useGame() {
     })
   }, [])
 
-  // ── sendAction — returns true if sent, false if offline ──
-  const sendAction = useCallback((action) => {
-    const r = roomRef.current
-    const m = meRef.current
-    if (!r?.code || !m?.id) return false
-    const ok = send({ type: 'ACTION', roomCode: r.code, playerId: m.id, action })
-    if (!ok) { setErrorMsg('Disconnected. Reconnecting…'); playSound('error') }
-    return ok
-  }, [send])
+  // ── processAction (host) ──────────────────────────────────
+  const processAction = useCallback((action) => {
+    const prevPhase      = roomRef.current?.phase
+    const prevAlertId    = roomRef.current?.superVitalsAlert?.id
+    const prevStunned    = roomRef.current?.stunnedPlayer
+    const { room: r, logs: l } = applyAction(roomRef.current, logsRef.current, action)
+    updateRoom(r); updateLogs(l)
 
-  // ── toggleVisibility (host only) ─────────────────────────
-  const toggleVisibility = useCallback(() => {
-    const r = roomRef.current
-    const m = meRef.current
-    if (!r?.code || !m?.id) return
-    send({ type: 'TOGGLE_VISIBILITY', roomCode: r.code, playerId: m.id })
-  }, [send])
-
-  // ── listRooms ────────────────────────────────────────────
-  const listRooms = useCallback(() => {
-    send({ type: 'LIST_ROOMS' })
-  }, [send])
-
-  // ── Shared STATE_SYNC side-effects ────────────────────────
-  const applySyncSideEffects = useCallback((payload, logs, prevPhase, prevStunned, prevFrozen, prevAlertId, prevCount, myI) => {
-    updateRoom(payload); updateLogs(logs ?? [])
-    updateMyIdx(myI); setLoading(false)
-    syncRevealed(prevCount)
-
-    const np = payload.phase
-
-    // ── Sound triggers on phase transitions ──────────────────
-    const oldPhase = prevPhaseRef.current
-    if (oldPhase !== np) {
-      if (np === 'showWindow' && oldPhase !== 'showWindow') {
-        playSound('show')
-      }
-      if ((np === 'afterShow' || np === 'roundEnd') && oldPhase !== 'afterShow' && oldPhase !== 'roundEnd') {
-        playSound('roundResult')
-      }
-      if (np === 'ended') {
-        playSound('gameEnd')
-      }
-      prevPhaseRef.current = np
+    if (action.type === 'SHOW') {
+      send({ type:'STATE_SYNC', payload:r, logs:l })
+      startCountdown(r.showWindowEnd)
+      resolveTimerRef.current = setTimeout(() => processAction({ type:'SHOW_RESOLVE' }), 5000)
+      return
+    }
+    if (action.type === 'SHOW_RESOLVE') {
+      send({ type:'STATE_SYNC', payload:r, logs:l })
+      clearCountdown()
+      setTimeout(() => {
+        const { room:r2, logs:l2 } = applyAction(roomRef.current, logsRef.current, { type:'ROUND_END' })
+        updateRoom(r2); updateLogs(l2)
+        send({ type:'STATE_SYNC', payload:r2, logs:l2 })
+      }, 1800)
+      return
     }
 
-    // ── Sound trigger: cardPass and specials are handled via SOUND_EVENT ──
-    // Phase-based sounds are handled below
-    const newLogs  = logs ?? []
-    prevLogsLenRef.current = newLogs.length
-
-
+    const myI = myIdxRef.current
+    const np  = r.phase
     if (np === 'playing' && (prevPhase === 'roundEnd' || prevPhase === 'lobby')) {
-      const count = payload.players[myI]?.chits?.length ?? 0
+      const count = r.players[myI]?.chits?.length ?? 0
       updateMyRevealed(Array(count).fill(false))
       setMustPassNormal(false); setSpecialAction(null); setIsStunned(false)
     }
     if (np === 'playing' && prevPhase !== 'playing') setSpecialAction(null)
-    if (np === 'showWindow' && prevPhase !== 'showWindow') startCountdown(payload.showWindowEnd)
-    if (prevPhase === 'showWindow' && np !== 'showWindow') clearCountdown()
-    if (payload.stunnedPlayer === myI && prevStunned !== myI) triggerStunFlash()
-    if (prevStunned === myI && payload.stunnedPlayer !== myI) setIsStunned(false)
-
-    // Sync mustPassNormal from server if field is present
-    if (payload.mustPassNormalPlayerIdx !== undefined) {
-      setMustPassNormal(payload.mustPassNormalPlayerIdx === myI)
-    }
+    if (action.type === 'STUN_GRENADE_PICK' && action.targetIdx === myI) triggerStunFlash()
+    if (prevStunned === myI && r.stunnedPlayer !== myI) setIsStunned(false)
 
     if (np === 'pendingSpecial') {
-      const pa = payload.pendingAction
+      const pa = r.pendingAction
       if (pa?.userIdx === myI) {
         const excl = [pa.handOwnerIdx ?? myI]
+        const nextIdx = (r.currentTurn + r.direction + r.players.length) % r.players.length
         if (pa.type === 'FREEZE')          setSpecialAction({ type:'PICK_TARGET', actionType:'FREEZE_PICK',                 exclude:excl })
         if (pa.type === 'BLIND_SNATCH')    setSpecialAction({ type:'PICK_TARGET', actionType:'BLIND_SNATCH_PICK',           exclude:excl })
         if (pa.type === 'REVEALED_SNATCH') setSpecialAction({ type:'PICK_TARGET', actionType:'REVEALED_SNATCH_PICK_TARGET', exclude:excl })
         if (pa.type === 'STUN_GRENADE')    setSpecialAction({ type:'PICK_TARGET', actionType:'STUN_GRENADE_PICK',           exclude:excl })
         if (pa.type === 'NUKE')            setSpecialAction({ type:'PICK_TARGET', actionType:'NUKE_PICK_TARGET',            exclude:excl })
+        if (pa.type === 'PUPPETEER')       setSpecialAction({ type:'PICK_TARGET', actionType:'PUPPETEER_PICK',              exclude:[...excl, nextIdx] })
+        if (pa.type === 'POSITION_SWAP')   setSpecialAction({ type:'PICK_TARGET', actionType:'POSITION_SWAP_PICK',         exclude:excl })
       }
     }
-    if (np === 'blindSnatchPicking' && payload.pendingAction?.userIdx === myI) {
-      setSpecialAction({ type:'BLIND_SNATCH_PICK_CARD', targetIdx: payload.pendingAction.targetIdx, handOwnerIdx: payload.pendingAction.handOwnerIdx ?? myI })
+    if (np === 'blindSnatchPicking' && r.pendingAction?.userIdx === myI) {
+      setSpecialAction({ type:'BLIND_SNATCH_PICK_CARD', targetIdx: r.pendingAction.targetIdx, handOwnerIdx: r.pendingAction.handOwnerIdx ?? myI })
       setLoading(false)
     }
-    if (np === 'revealedSnatchPicking' && payload.pendingAction?.userIdx === myI) {
-      setSpecialAction({ type:'REVEALED_SNATCH_PICK', options: payload.pendingAction.revealedOptions, targetIdx: payload.pendingAction.targetIdx, handOwnerIdx: payload.pendingAction.handOwnerIdx ?? myI })
+    if (np === 'revealedSnatchPicking' && r.pendingAction?.userIdx === myI) {
+      setSpecialAction({ type:'REVEALED_SNATCH_PICK', options: r.pendingAction.revealedOptions, targetIdx: r.pendingAction.targetIdx, handOwnerIdx: r.pendingAction.handOwnerIdx ?? myI })
       setLoading(false)
     }
-    if (np === 'nukePicking' && payload.pendingAction?.userIdx === myI) {
-      const ti       = payload.pendingAction.targetIdx
-      const specials = payload.players[ti].chits.map((c, i) => ({ c, i })).filter(({ c }) => isSpecial(c))
+    if (np === 'nukePicking' && r.pendingAction?.userIdx === myI) {
+      const ti = r.pendingAction.targetIdx
+      const specials = r.players[ti].chits.map((c, i) => ({ c, i })).filter(({ c }) => isSpecial(c))
       setSpecialAction({ type:'NUKE_PICK_CARD', targetIdx: ti, specials })
       setLoading(false)
     }
-    if (payload.frozenPlayer === myI && prevFrozen !== myI) {
-      const count = payload.players[myI]?.chits?.length ?? 0
+    if (np === 'playing' && prevPhase === 'lobby') {
+      setTimeout(() => setLoading(false), 0)
+    }
+    if (action.type === 'USE_FREEZE' && r.frozenPlayer === myI) {
+      const count = r.players[myI]?.chits?.length ?? 0
       updateMyRevealed(Array(count).fill(false))
     }
-    if (payload.superVitalsAlert?.id && payload.superVitalsAlert.id !== prevAlertId) {
-      fireSuperVitalsAlert(payload, payload.superVitalsAlert.matchingPlayerIdx)
-    }
-  }, [syncRevealed, startCountdown, clearCountdown, triggerStunFlash, fireSuperVitalsAlert])
 
-  const lastSoundEventIds = useRef(new Set())
+    // Super Vitals alert
+    if (r.superVitalsAlert?.id && r.superVitalsAlert.id !== prevAlertId) {
+      fireSuperVitalsAlert(r, r.superVitalsAlert.matchingPlayerIdx)
+    }
+
+    send({ type:'STATE_SYNC', payload:r, logs:l })
+  }, [send, startCountdown, clearCountdown, triggerStunFlash, fireSuperVitalsAlert])
+
+  const sendAction = useCallback((action) => {
+    if (roomRef.current?.hostId === meRef.current?.id) processAction(action)
+    else send({ type:'ACTION', action })
+  }, [processAction, send])
 
   // ── onMessage ─────────────────────────────────────────────
   const onMessage = useCallback((data) => {
     switch (data.type) {
-
-      case 'SOUND_EVENT': {
-        const { id, sound } = data
-        if (id && lastSoundEventIds.current.has(id)) break
-        if (id) {
-          lastSoundEventIds.current.add(id)
-          // Keep set bounded — prune oldest if over 50
-          if (lastSoundEventIds.current.size > 50) {
-            const first = lastSoundEventIds.current.values().next().value
-            lastSoundEventIds.current.delete(first)
-          }
+      case 'REQUEST_STATE': {
+        if (roomRef.current?.hostId !== meRef.current?.id) return
+        const r = roomRef.current
+        const exists = r.players.find(p => p.id === data.fromId)
+        if (!exists && r.players.length < 5 && r.phase === 'lobby') {
+          const np = makePlayer(data.fromId, data.fromName, r.players.length)
+          const newRoom = { ...r, players:[...r.players, np] }
+          const newLogs = [`${data.fromName} joined!`, ...logsRef.current]
+          updateRoom(newRoom); updateLogs(newLogs)
+          send({ type:'STATE_SYNC', payload:newRoom, logs:newLogs })
+        } else {
+          send({ type:'STATE_SYNC', payload:r, logs:logsRef.current })
         }
-        if (sound) playSound(sound)
         break
       }
-
-      case 'ROOM_CREATED': {
-        saveSession(meRef.current, data.roomCode)
-        navigateToRoom(data.roomCode)
-        updateRoom(data.room)
-        updateLogs(data.logs ?? [])
-        updateMyIdx(0)
-        updateMyRevealed([])
-        setIsPublic(data.isPublic ?? false)
-        setLoading(false)
-        break
-      }
-
-      case 'JOINED_ROOM': {
-        saveSession(meRef.current, data.roomCode)
-        navigateToRoom(data.roomCode)
-        const prevPhase   = roomRef.current?.phase
-        const prevStunned = roomRef.current?.stunnedPlayer
-        const prevFrozen  = roomRef.current?.frozenPlayer
-        const prevAlertId = roomRef.current?.superVitalsAlert?.id
-        const prevCount   = roomRef.current?.players[myIdxRef.current]?.chits?.length ?? 0
-        const myI         = data.room.players.findIndex(p => p.id === meRef.current.id)
-        setIsPublic(data.isPublic ?? false)
-        applySyncSideEffects(data.room, data.logs, prevPhase, prevStunned, prevFrozen, prevAlertId, prevCount, myI)
-        break
-      }
-
       case 'STATE_SYNC': {
         const prevPhase   = roomRef.current?.phase
         const prevStunned = roomRef.current?.stunnedPlayer
         const prevFrozen  = roomRef.current?.frozenPlayer
         const prevAlertId = roomRef.current?.superVitalsAlert?.id
         const prevCount   = roomRef.current?.players[myIdxRef.current]?.chits?.length ?? 0
-        const myI         = data.payload.players.findIndex(p => p.id === meRef.current.id)
-        applySyncSideEffects(data.payload, data.logs, prevPhase, prevStunned, prevFrozen, prevAlertId, prevCount, myI)
-        break
-      }
+        updateRoom(data.payload); updateLogs(data.logs ?? [])
+        const idx = data.payload.players.findIndex(p => p.id === meRef.current.id)
+        updateMyIdx(idx); setLoading(false)
+        syncRevealed(prevCount)
 
-      case 'ROOMS_LIST': {
-        setPublicRooms(data.rooms ?? [])
-        break
-      }
+        const np  = data.payload.phase
+        const myI = idx
 
-      case 'VISIBILITY_CHANGED': {
-        setIsPublic(data.isPublic)
-        break
-      }
+        if (np === 'playing' && (prevPhase === 'roundEnd' || prevPhase === 'lobby')) {
+          const count = data.payload.players[myI]?.chits?.length ?? 0
+          updateMyRevealed(Array(count).fill(false))
+          setMustPassNormal(false); setSpecialAction(null); setIsStunned(false)
+        }
+        if (np === 'playing' && prevPhase !== 'playing') setSpecialAction(null)
+        if (np === 'showWindow' && prevPhase !== 'showWindow') startCountdown(data.payload.showWindowEnd)
+        if (prevPhase === 'showWindow' && np !== 'showWindow') clearCountdown()
+        if (data.payload.stunnedPlayer === myI && prevStunned !== myI) triggerStunFlash()
+        if (prevStunned === myI && data.payload.stunnedPlayer !== myI) setIsStunned(false)
 
-      case 'ERROR': {
-        const msg = data.message ?? 'Unknown error'
-        setErrorMsg(msg)
-        setLoading(false)
-        playSound('error')
-        // Room no longer exists after reconnect — clear stale session + URL
-        if (msg.toLowerCase().includes('not found')) {
-          const pathRoom = getRoomCodeFromPath()
-          if (!roomRef.current && pathRoom) {
-            clearSession(pathRoom)
-            navigateHome()
+        if (np === 'pendingSpecial') {
+          const pa = data.payload.pendingAction
+          if (pa?.userIdx === myI) {
+            const excl = [pa.handOwnerIdx ?? myI]
+            const nextIdx = (data.payload.currentTurn + data.payload.direction + data.payload.players.length) % data.payload.players.length
+            if (pa.type === 'FREEZE')          setSpecialAction({ type:'PICK_TARGET', actionType:'FREEZE_PICK',                 exclude:excl })
+            if (pa.type === 'BLIND_SNATCH')    setSpecialAction({ type:'PICK_TARGET', actionType:'BLIND_SNATCH_PICK',           exclude:excl })
+            if (pa.type === 'REVEALED_SNATCH') setSpecialAction({ type:'PICK_TARGET', actionType:'REVEALED_SNATCH_PICK_TARGET', exclude:excl })
+            if (pa.type === 'STUN_GRENADE')    setSpecialAction({ type:'PICK_TARGET', actionType:'STUN_GRENADE_PICK',           exclude:excl })
+            if (pa.type === 'NUKE')            setSpecialAction({ type:'PICK_TARGET', actionType:'NUKE_PICK_TARGET',            exclude:excl })
+            if (pa.type === 'PUPPETEER')       setSpecialAction({ type:'PICK_TARGET', actionType:'PUPPETEER_PICK',              exclude:[...excl, nextIdx] })
+            if (pa.type === 'POSITION_SWAP')   setSpecialAction({ type:'PICK_TARGET', actionType:'POSITION_SWAP_PICK',         exclude:excl })
           }
+        }
+        if (np === 'blindSnatchPicking' && data.payload.pendingAction?.userIdx === myI) {
+          setSpecialAction({ type:'BLIND_SNATCH_PICK_CARD', targetIdx: data.payload.pendingAction.targetIdx, handOwnerIdx: data.payload.pendingAction.handOwnerIdx ?? myI })
+          setLoading(false)
+        }
+        if (np === 'revealedSnatchPicking' && data.payload.pendingAction?.userIdx === myI) {
+          setSpecialAction({ type:'REVEALED_SNATCH_PICK', options: data.payload.pendingAction.revealedOptions, targetIdx: data.payload.pendingAction.targetIdx, handOwnerIdx: data.payload.pendingAction.handOwnerIdx ?? myI })
+          setLoading(false)
+        }
+        if (np === 'nukePicking' && data.payload.pendingAction?.userIdx === myI) {
+          const ti = data.payload.pendingAction.targetIdx
+          const specials = data.payload.players[ti].chits.map((c, i) => ({ c, i })).filter(({ c }) => isSpecial(c))
+          setSpecialAction({ type:'NUKE_PICK_CARD', targetIdx:ti, specials })
+          setLoading(false)
+        }
+        if (data.payload.frozenPlayer === myI && prevFrozen !== myI) {
+          const count = data.payload.players[myI]?.chits?.length ?? 0
+          updateMyRevealed(Array(count).fill(false))
+        }
+
+        // Super Vitals alert
+        if (data.payload.superVitalsAlert?.id && data.payload.superVitalsAlert.id !== prevAlertId) {
+          fireSuperVitalsAlert(data.payload, data.payload.superVitalsAlert.matchingPlayerIdx)
         }
         break
       }
-
-      default:
+      case 'ACTION': {
+        if (roomRef.current?.hostId !== meRef.current?.id) return
+        processAction(data.action)
         break
+      }
     }
-  }, [applySyncSideEffects])
-
-  // ── Mount: auto-resume from URL or last session ───────────
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    const pathRoom = getRoomCodeFromPath()
-    const session = loadSession(pathRoom || undefined)
-    if (session?.me?.id && session?.roomCode) {
-      updateMe(session.me)
-      meRef.current = session.me
-      connect(onMessage, setWsStatus, {
-        type:     'JOIN_ROOM',
-        roomCode: session.roomCode,
-        player:   session.me,
-      })
-    } else if (pathRoom) {
-      // URL has room code but no saved session — prefill join screen
-      setInitialRoomCode(pathRoom)
-    }
-  }, []) // mount only
+  }, [send, syncRevealed, startCountdown, clearCountdown, processAction, triggerStunFlash, fireSuperVitalsAlert])
 
   // ── Room management ───────────────────────────────────────
-
-  const createRoom = useCallback(async (name, isPublicRoom = false) => {
-    const newMe = { id: uid(), name }
+  const createRoom = useCallback(async (name) => {
+    const newMe = { id:uid(), name }
     updateMe(newMe); meRef.current = newMe
-    setLoading(true)
-    connect(
-      onMessage,
-      setWsStatus,
-      { type: 'CREATE_ROOM', player: { id: newMe.id, name }, isPublic: isPublicRoom },
-    )
+    const code = generateRoomCode()
+    const host = makePlayer(newMe.id, name, 0)
+    const r    = makeRoom(code, host)
+    updateRoom(r); updateLogs(['Room created! Share the code.'])
+    updateMyIdx(0); updateMyRevealed([])
+    connect(onMessage, setWsStatus)
+    return code
   }, [connect, onMessage])
 
   const joinRoom = useCallback(async (name, code) => {
     setErrorMsg(''); setLoading(true)
-    const newMe = { id: uid(), name }
+    const newMe = { id:uid(), name }
     updateMe(newMe); meRef.current = newMe
-    connect(
-      onMessage,
-      setWsStatus,
-      { type: 'JOIN_ROOM', roomCode: code, player: { id: newMe.id, name } },
-    )
-  }, [connect, onMessage])
+    updateRoom({ code, phase:'lobby', players:[], hostId:null, round:1, currentTurn:0, direction:1, showCaller:-1, showClicks:[], frozenPlayer:-1, stunnedPlayer:-1, puppeteerInfo:null, positionSwaps:[], pendingAction:null, mode:'special', effects:[], superVitalsAlert:null })
+    updateLogs([])
+    connect(onMessage, setWsStatus)
+    await delay(600)
+    send({ type:'REQUEST_STATE', fromId:newMe.id, fromName:name })
+    let retries = 0
+    const retry = setInterval(() => {
+      if (myIdxRef.current >= 0 || retries++ > 10) { clearInterval(retry); return }
+      send({ type:'REQUEST_STATE', fromId:newMe.id, fromName:name })
+    }, 800)
+    await waitFor(() => myIdxRef.current >= 0, 10000, 'Room not found or host is offline.')
+    clearInterval(retry)
+  }, [connect, send, onMessage])
 
-  // Connect just for browsing public rooms — no room join
-  const connectForBrowsing = useCallback((name) => {
-    const newMe = { id: uid(), name }
-    updateMe(newMe); meRef.current = newMe
-    connect(onMessage, setWsStatus, null)
-    setTimeout(() => send({ type: 'LIST_ROOMS' }), 300)
-  }, [connect, onMessage, send])
-
-  const leaveRoom = useCallback(() => {
-    clearCountdown()
-    autoRevealTimerRef.current.forEach(clearTimeout)
-    autoRevealTimerRef.current = []
-
-    const r = roomRef.current
-    const m = meRef.current
-    if (r?.code && m?.id) {
-      send({ type: 'LEAVE_ROOM', roomCode: r.code, playerId: m.id })
-    }
-
-    // Clear per-room session and URL — intentional leave
-    clearSession(r?.code)
-    navigateHome()
-
-    disconnect()
-    updateRoom(null); updateMyIdx(-1); setSelectedChit(-1)
-    updateLogs([]); setErrorMsg(''); updateMyRevealed([])
-    setSpecialAction(null); setMustPassNormal(false)
-    setIsStunned(false); setStunFlash(false)
-    setPublicRooms([]); setIsPublic(false)
-    updateMe({ id: '', name: '' })
-  }, [clearCountdown, disconnect, send])
-
-  // ── Mode / Settings ───────────────────────────────────────
+  // ── Mode ─────────────────────────────────────────────────
   const setMode = useCallback((mode) => sendAction({ type:'SET_MODE', mode }), [sendAction])
 
+  // ── Settings ──────────────────────────────────────────────
   const setHandSetup = useCallback((normalCount, specialCount) => {
     sendAction({ type:'SET_HAND_SETUP', normalCount, specialCount })
   }, [sendAction])
@@ -410,7 +356,7 @@ export function useGame() {
     sendAction({ type:'SET_ENABLED_SPECIALS', enabledSpecials })
   }, [sendAction])
 
-  // ── Start ─────────────────────────────────────────────────
+  // ── Start ────────────────────────────────────────────────
   const startGame = useCallback(() => {
     setLoading(true)
     const s  = room?.settings
@@ -421,7 +367,7 @@ export function useGame() {
     sendAction({ type:'START' })
   }, [sendAction, room])
 
-  // ── Reveal ────────────────────────────────────────────────
+  // ── Reveal ───────────────────────────────────────────────
   const revealChit = useCallback((i) => {
     if (isStunned || amIStunned) return
     if (!['playing','pendingSpecial','revealedSnatchPicking','nukePicking'].includes(roomRef.current?.phase)) return
@@ -429,24 +375,28 @@ export function useGame() {
   }, [isStunned, amIStunned, revealAllMyCardsWithAnimation])
 
   // ── Chit click ────────────────────────────────────────────
-  const onChitClick = useCallback((i) => {
+  const onChitClick = useCallback((i, forActingPlayer = false) => {
     const r     = roomRef.current
-    const chits = r?.players[myIdxRef.current]?.chits ?? []
+    const pidx  = forActingPlayer ? r?.puppeteerInfo?.targetIdx : myIdxRef.current
+    const chits = r?.players[pidx]?.chits ?? []
     const chit  = chits[i]
     if (!chit) return
 
-    if (amIStunned || isStunned) {
+    const myRev = forActingPlayer ? Array(chits.length).fill(true) : myRevealedRef.current
+
+    if (!forActingPlayer && (amIStunned || isStunned)) {
       if (r?.phase === 'playing' && isMyTurn) setSelectedChit(prev => prev === i ? -1 : i)
       return
     }
 
-    if (!myRevealedRef.current[i]) { revealAllMyCardsWithAnimation(); return }
+    if (!forActingPlayer && !myRev[i]) { revealAllMyCardsWithAnimation(); return }
 
+    // Allow anytime specials even outside own turn
     const isAnytime = isSpecial(chit) && SPECIAL_CONFIG[chit.type]?.timing === 'ANYTIME'
-    const canAct    = isMyTurn || isAnytime
+    const canActSpecial = forActingPlayer ? true : (isMyTurn || isAnytime)
 
-    if (isSpecial(chit) && canAct && r?.phase === 'playing' && !mustPassNormal) {
-      setSpecialAction({ type:'USE_OR_PASS', chitIdx:i, special:chit })
+    if (isSpecial(chit) && canActSpecial && r?.phase === 'playing' && !mustPassNormal) {
+      setSpecialAction({ type:'USE_OR_PASS', chitIdx:i, special:chit, forActing:forActingPlayer })
       setSelectedChit(i)
       return
     }
@@ -455,182 +405,261 @@ export function useGame() {
     }
   }, [isMyTurn, mustPassNormal, revealAllMyCardsWithAnimation, amIStunned, isStunned])
 
-  // ── Pass ──────────────────────────────────────────────────
-  const passChit = useCallback((chitIdx) => {
+  // ── Pass ─────────────────────────────────────────────────
+  const passChit = useCallback((chitIdx, forActingPlayer = false) => {
     if (chitIdx === -1) { setErrorMsg('Select a chit to pass!'); return }
-    const pidx = myIdxRef.current
-    const ok   = sendAction({ type:'PASS', actorIdx: pidx, handOwnerIdx: pidx, playerIdx: pidx, chitIdx })
-    if (!ok) return
-    // cardPass sound plays for all players via log-based trigger in applySyncSideEffects
-    const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
+    const pidx    = forActingPlayer ? roomRef.current?.puppeteerInfo?.targetIdx : myIdxRef.current
+    const actorIdx = myIdxRef.current
+
+    if (!forActingPlayer) {
+      const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
+    }
     setSelectedChit(-1); setErrorMsg(''); setSpecialAction(null)
     if (mustPassNormal) setMustPassNormal(false)
     if (amIStunned || isStunned) setIsStunned(false)
+    sendAction({ type:'PASS', actorIdx, handOwnerIdx: pidx, playerIdx: pidx, chitIdx })
   }, [sendAction, mustPassNormal, amIStunned, isStunned])
 
   // ── Use special ───────────────────────────────────────────
-  const useSpecial = useCallback((chitIdx, special) => {
+  const useSpecial = useCallback((chitIdx, special, forActing = false) => {
     setSelectedChit(-1)
-    const pidx = myIdxRef.current
-    const base = { actorIdx: pidx, handOwnerIdx: pidx, playerIdx: pidx, chitIdx }
+    if (!forActing) {
+      const rev = [...myRevealedRef.current]
+      rev.splice(chitIdx, 1)
+      updateMyRevealed(rev)
+    }
+    const pidx       = forActing ? roomRef.current?.puppeteerInfo?.targetIdx : myIdxRef.current
+    const actorIdx   = myIdxRef.current
+    const handOwnerIdx = pidx
+
     const setMustPassIfTurn = () => { if (isTurnNow()) setMustPassNormal(true) }
+
+    const base = { actorIdx, handOwnerIdx, playerIdx: handOwnerIdx, chitIdx }
 
     const actionMap = {
       REVERSE: () => {
-        const ok = sendAction({ type:'USE_REVERSE', ...base })
-        if (!ok) return
-        // Sound plays for all via SOUND_EVENT from server
-        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
+        sendAction({ type:'USE_REVERSE', ...base })
         setMustPassNormal(true); setSpecialAction(null)
       },
       FREEZE: () => {
-        const ok = sendAction({ type:'USE_FREEZE', ...base })
-        if (!ok) return
-        // Sound plays for all via SOUND_EVENT from server
-        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
-        setSpecialAction({ type:'PICK_TARGET', actionType:'FREEZE_PICK', exclude:[pidx] })
+        sendAction({ type:'USE_FREEZE', ...base })
+        setSpecialAction({ type:'PICK_TARGET', actionType:'FREEZE_PICK', exclude:[handOwnerIdx] })
       },
       BLIND_SNATCH: () => {
-        const ok = sendAction({ type:'USE_BLIND_SNATCH', ...base })
-        if (!ok) return
-        // Sound plays for all via SOUND_EVENT from server
-        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
-        setSpecialAction({ type:'PICK_TARGET', actionType:'BLIND_SNATCH_PICK', exclude:[pidx] })
+        sendAction({ type:'USE_BLIND_SNATCH', ...base })
+        setSpecialAction({ type:'PICK_TARGET', actionType:'BLIND_SNATCH_PICK', exclude:[handOwnerIdx] })
       },
       REVEALED_SNATCH: () => {
-        const ok = sendAction({ type:'USE_REVEALED_SNATCH', ...base })
-        if (!ok) return
-        // Sound plays for all via SOUND_EVENT from server
-        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
-        setSpecialAction({ type:'PICK_TARGET', actionType:'REVEALED_SNATCH_PICK_TARGET', exclude:[pidx] })
+        sendAction({ type:'USE_REVEALED_SNATCH', ...base })
+        setSpecialAction({ type:'PICK_TARGET', actionType:'REVEALED_SNATCH_PICK_TARGET', exclude:[handOwnerIdx] })
       },
       STUN_GRENADE: () => {
-        const ok = sendAction({ type:'USE_STUN_GRENADE', ...base })
-        if (!ok) return
-        // Sound plays for all via SOUND_EVENT from server
-        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
-        setSpecialAction({ type:'PICK_TARGET', actionType:'STUN_GRENADE_PICK', exclude:[pidx] })
+        sendAction({ type:'USE_STUN_GRENADE', ...base })
+        setSpecialAction({ type:'PICK_TARGET', actionType:'STUN_GRENADE_PICK', exclude:[handOwnerIdx] })
       },
       NUKE: () => {
-        const ok = sendAction({ type:'USE_NUKE', ...base })
-        if (!ok) return
-        // Sound plays for all via SOUND_EVENT from server
-        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
-        setSpecialAction({ type:'PICK_TARGET', actionType:'NUKE_PICK_TARGET', exclude:[pidx] })
+        sendAction({ type:'USE_NUKE', ...base })
+        setSpecialAction({ type:'PICK_TARGET', actionType:'NUKE_PICK_TARGET', exclude:[handOwnerIdx] })
+      },
+      PUPPETEER: () => {
+        sendAction({ type:'USE_PUPPETEER', ...base })
+        setSpecialAction({ type:'PICK_TARGET', actionType:'PUPPETEER_PICK', exclude:[handOwnerIdx, nextPlayerIdxRef.current] })
+      },
+      POSITION_SWAP: () => {
+        sendAction({ type:'USE_POSITION_SWAP', ...base })
+        setSpecialAction({ type:'PICK_TARGET', actionType:'POSITION_SWAP_PICK', exclude:[handOwnerIdx] })
       },
       VITALS: () => {
         const r = roomRef.current
-        const ok = sendAction({ type:'USE_VITALS', ...base })
-        if (!ok) return
-        // Sound plays for all via SOUND_EVENT from server
-        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
-        setSpecialAction({ type:'VITALS_RESULT', data: computeVitals(r.players, myIdxRef.current) })
+        const data = computeVitals(r.players, myIdxRef.current)
+        setSpecialAction({ type:'VITALS_RESULT', data })
+        sendAction({ type:'USE_VITALS', ...base })
         setMustPassIfTurn()
       },
       SUPER_VITALS: () => {
-        const r       = roomRef.current
+        const r = roomRef.current
         const reqSets = r.settings?.normalCount === 8 ? 2 : 1
-        const ok = sendAction({ type:'USE_SUPER_VITALS', ...base })
-        if (!ok) return
-        // Sound plays for all via SOUND_EVENT from server
-        const rev = [...myRevealedRef.current]; rev.splice(chitIdx, 1); updateMyRevealed(rev)
-        setSpecialAction({ type:'SUPER_VITALS_RESULT', data: computeSuperVitals(r.players, myIdxRef.current, reqSets) })
+        const data = computeSuperVitals(r.players, myIdxRef.current, reqSets)
+        setSpecialAction({ type:'SUPER_VITALS_RESULT', data })
+        sendAction({ type:'USE_SUPER_VITALS', ...base })
         setMustPassIfTurn()
       },
     }
+
     actionMap[special.type]?.()
   }, [sendAction])
 
-  // ── Generic target pick ───────────────────────────────────
+  // ── Generic target pick result ────────────────────────────
   const pickTarget = useCallback((targetIdx, actionType) => {
+    setSpecialAction(null)
+
     const actionMap = {
-      'BLIND_SNATCH_PICK': () => {
-        const ok = sendAction({ type:'BLIND_SNATCH_PICK', targetIdx })
-        if (ok) { setLoading(true); setSpecialAction(null) }
-      },
-      'REVEALED_SNATCH_PICK_TARGET': () => {
-        const ok = sendAction({ type:'REVEALED_SNATCH_PICK_TARGET', targetIdx })
-        if (ok) { setLoading(true); setSpecialAction(null) }
-      },
-      'FREEZE_PICK': () => {
-        const ok = sendAction({ type:'FREEZE_PICK', targetIdx })
-        if (ok) { setSpecialAction(null); if (isTurnNow()) setMustPassNormal(true) }
-      },
-      'STUN_GRENADE_PICK': () => {
-        const ok = sendAction({ type:'STUN_GRENADE_PICK', targetIdx })
-        if (ok) { setSpecialAction(null); if (isTurnNow()) setMustPassNormal(true) }
-      },
-      'NUKE_PICK_TARGET': () => {
-        const ok = sendAction({ type:'NUKE_PICK_TARGET', targetIdx })
-        if (ok) { setLoading(true); setSpecialAction(null) }
-      },
+      'BLIND_SNATCH_PICK':           () => { setLoading(true); sendAction({ type:'BLIND_SNATCH_PICK',          targetIdx }) },
+      'REVEALED_SNATCH_PICK_TARGET': () => { setLoading(true); sendAction({ type:'REVEALED_SNATCH_PICK_TARGET',targetIdx }) },
+      'FREEZE_PICK':                 () => { sendAction({ type:'FREEZE_PICK',            targetIdx }); if (isTurnNow()) setMustPassNormal(true) },
+      'STUN_GRENADE_PICK':           () => { sendAction({ type:'STUN_GRENADE_PICK',      targetIdx }); if (isTurnNow()) setMustPassNormal(true) },
+      'NUKE_PICK_TARGET':            () => { setLoading(true); sendAction({ type:'NUKE_PICK_TARGET', targetIdx }) },
+      'PUPPETEER_PICK':              () => sendAction({ type:'PUPPETEER_PICK',            targetIdx }),
+      'POSITION_SWAP_PICK':          () => { sendAction({ type:'POSITION_SWAP_PICK',     targetIdx }); setMustPassNormal(true) },
     }
     actionMap[actionType]?.()
   }, [sendAction])
 
   const blindSnatchPickCard = useCallback((targetCardIdx, ownCardIdx) => {
-    const ok = sendAction({ type:'BLIND_SNATCH_PICK_CARD', targetCardIdx, ownCardIdx })
-    if (ok) { setSpecialAction(null); setMustPassNormal(true) }
+    setSpecialAction(null)
+    sendAction({ type:'BLIND_SNATCH_PICK_CARD', targetCardIdx, ownCardIdx })
+    setMustPassNormal(true)
   }, [sendAction])
 
   const revealedSnatchPick = useCallback((targetCardIdx, ownCardIdx) => {
-    const ok = sendAction({ type:'REVEALED_SNATCH_PICK_CHIT', targetCardIdx, ownCardIdx })
-    if (ok) { setSpecialAction(null); setMustPassNormal(true) }
+    setSpecialAction(null)
+    sendAction({ type:'REVEALED_SNATCH_PICK_CHIT', targetCardIdx, ownCardIdx })
+    setMustPassNormal(true)
   }, [sendAction])
 
   const nukePickCard = useCallback((chitIdx) => {
-    const ok = sendAction({ type:'NUKE_PICK_CARD', chitIdx })
-    if (ok) { setSpecialAction(null); if (isTurnNow()) setMustPassNormal(true) }
+    setSpecialAction(null)
+    sendAction({ type:'NUKE_PICK_CARD', chitIdx })
+    if (isTurnNow()) setMustPassNormal(true)
   }, [sendAction])
 
-  const cancelSpecial = useCallback(() => { setSpecialAction(null); setSelectedChit(-1) }, [])
+  const cancelSpecial = useCallback(() => {
+    setSpecialAction(null); setSelectedChit(-1)
+  }, [])
+
   const dismissVitals = useCallback(() => setSpecialAction(null), [])
+
+  const consumeVitals = useCallback((chitIdx, type) => {
+    sendAction({ type: type === 'VITALS' ? 'USE_VITALS' : 'USE_SUPER_VITALS', playerIdx: myIdxRef.current, chitIdx })
+    setMustPassNormal(true)
+  }, [sendAction])
 
   const callShow = useCallback(() => {
     if (!canCallShow) { setErrorMsg("Your 4 normals don't all match!"); return }
-    setErrorMsg('')
-    sendAction({ type:'SHOW', playerIdx: myIdxRef.current, timestamp: Date.now() })
+    setErrorMsg(''); sendAction({ type:'SHOW', playerIdx:myIdxRef.current, timestamp:Date.now() })
   }, [canCallShow, sendAction])
 
   const joinShow = useCallback(() => {
     if (!canJoinShow) return
-    sendAction({ type:'SHOW_JOIN', playerIdx: myIdxRef.current, timestamp: Date.now() })
+    sendAction({ type:'SHOW_JOIN', playerIdx:myIdxRef.current, timestamp:Date.now() })
   }, [canJoinShow, sendAction])
 
   const nextRound = useCallback(() => {
-    const r  = roomRef.current; const s = r?.settings
-    const nc = s?.normalCount ?? 4; const sc = r?.mode === 'normal' ? 0 : (s?.specialCount ?? 2)
-    const ok = sendAction({ type:'NEXT_ROUND' })
-    if (ok) {
-      updateMyRevealed(Array(nc + sc).fill(false))
-      setMustPassNormal(false); setSpecialAction(null); setIsStunned(false)
-    }
+    const r  = roomRef.current
+    const s  = r?.settings
+    const nc = s?.normalCount ?? 4
+    const sc = r?.mode === 'normal' ? 0 : (s?.specialCount ?? 2)
+    updateMyRevealed(Array(nc + sc).fill(false))
+    setMustPassNormal(false); setSpecialAction(null); setIsStunned(false)
+    sendAction({ type:'NEXT_ROUND' })
   }, [sendAction])
 
   const endGame   = useCallback(() => sendAction({ type:'END_GAME' }), [sendAction])
-
   const playAgain = useCallback(() => {
-    const ok = sendAction({ type:'PLAY_AGAIN' })
-    if (ok) {
-      updateMyRevealed([]); setMustPassNormal(false); setSpecialAction(null); setIsStunned(false)
-    }
+    updateMyRevealed([]); setMustPassNormal(false); setSpecialAction(null); setIsStunned(false)
+    sendAction({ type:'PLAY_AGAIN' })
   }, [sendAction])
 
+  const leaveRoom = useCallback(() => {
+    clearCountdown()
+    autoRevealTimerRef.current.forEach(clearTimeout)
+    autoRevealTimerRef.current = []
+    disconnect()
+    updateRoom(null); updateMyIdx(-1); setSelectedChit(-1)
+    updateLogs([]); setErrorMsg(''); updateMyRevealed([])
+    setSpecialAction(null); setMustPassNormal(false); setIsStunned(false); setStunFlash(false)
+  }, [clearCountdown, disconnect])
+
+
+
   // ── Bot management ────────────────────────────────────────
-  // These are lobby-only actions — sent as top-level WS messages (not ACTION).
+  // This is a P2P game — the host owns the room state locally.
+  // Bots must be added/removed by mutating roomRef directly and
+  // broadcasting STATE_SYNC, exactly like all other host actions.
   const addBot = useCallback(() => {
-    const r = roomRef.current; const m = meRef.current
-    if (!r?.code || !m?.id) return
-    const ok = send({ type: 'ADD_BOT', roomCode: r.code, playerId: m.id })
-    if (!ok) setErrorMsg('Disconnected. Reconnecting…')
+    const r = roomRef.current
+    if (!r || r.phase !== 'lobby') return
+    if (r.hostId !== meRef.current?.id) return
+    if (r.players.length >= 5) return
+
+    const existingBots = r.players.filter(p => p.isBot).length
+    const botName = `Bot ${existingBots + 1}`
+    const botId   = `bot_${uid()}`
+    const bot     = makePlayer(botId, botName, r.players.length)
+    bot.isBot     = true
+    bot.online    = true
+    bot.botActive = false
+
+    const newRoom = { ...r, players: [...r.players, bot] }
+    const newLogs = [`${botName} added to lobby!`, ...logsRef.current]
+    updateRoom(newRoom)
+    updateLogs(newLogs)
+    send({ type: 'STATE_SYNC', payload: newRoom, logs: newLogs })
   }, [send])
 
   const removeBot = useCallback((targetIdx) => {
-    const r = roomRef.current; const m = meRef.current
-    if (!r?.code || !m?.id) return
-    const ok = send({ type: 'REMOVE_BOT', roomCode: r.code, playerId: m.id, targetIdx })
-    if (!ok) setErrorMsg('Disconnected. Reconnecting…')
+    const r = roomRef.current
+    if (!r || r.phase !== 'lobby') return
+    if (r.hostId !== meRef.current?.id) return
+    const target = r.players[targetIdx]
+    if (!target?.isBot) return
+
+    const newPlayers = r.players
+      .filter((_, i) => i !== targetIdx)
+      .map((p, i) => ({ ...p, color: i }))
+    const newRoom = { ...r, players: newPlayers }
+    const newLogs = [`${target.name} removed from lobby.`, ...logsRef.current]
+    updateRoom(newRoom)
+    updateLogs(newLogs)
+    send({ type: 'STATE_SYNC', payload: newRoom, logs: newLogs })
   }, [send])
+
+  // ── Ambience by room phase ────────────────────────────────
+  useEffect(() => {
+    const RESULT_PHASES = ['afterShow', 'roundEnd', 'ended']
+    const GAME_PHASES   = [
+      'playing', 'pendingSpecial', 'blindSnatchPicking',
+      'revealedSnatchPicking', 'nukePicking', 'showWindow',
+    ]
+
+    if (!room) {
+      playAmbience('lobby')
+      return
+    }
+
+    const phase = room.phase
+    if (phase === 'lobby') {
+      playAmbience('lobby')
+      gameAmbienceRef.current = null   // reset so a fresh loop is chosen next game
+    } else if (RESULT_PHASES.includes(phase)) {
+      playAmbience('result')
+    } else if (GAME_PHASES.includes(phase)) {
+      if (!gameAmbienceRef.current) {
+        gameAmbienceRef.current = chooseGameLoop()
+      }
+      playAmbience(gameAmbienceRef.current)
+    }
+  }, [room?.phase, room?.code])   // room?.code so a new room resets the choice
+
+  // ── "Your turn" sound ─────────────────────────────────────
+  useEffect(() => {
+    const currentTurn = room?.currentTurn
+    const myI         = myIdx
+
+    if (
+      room?.phase === 'playing' &&
+      currentTurn === myI &&
+      prevTurnRef.current !== currentTurn &&
+      myI >= 0 &&
+      !room.players?.[myI]?.isBot &&
+      !room.players?.[myI]?.botActive &&
+      room.players?.[myI]?.online !== false
+    ) {
+      playSound('yourTurn')
+    }
+
+    prevTurnRef.current = currentTurn
+  }, [room?.currentTurn, room?.phase, myIdx])
 
   return {
     me, room, logs, myIdx, selectedChit, setSelectedChit,
@@ -638,31 +667,29 @@ export function useGame() {
     isHost, myPlayer, isMyTurn, turnPlayer, showAll,
     myRevealed, countdown, canJoinShow, hasJoinedShow, canCallShow,
     specialAction, mustPassNormal, stunFlash, isStunned, amIStunned,
+    amIPuppeteer, amIPuppeted, puppetTarget, actingIdx, actingPlayer,
     isSpecialUsableNow,
-    initialRoomCode,
-    // Public lobby
-    publicRooms, isPublic, toggleVisibility, listRooms, connectForBrowsing,
     createRoom, joinRoom, startGame, setMode, setHandSetup, setEnabledSpecials,
     revealChit, onChitClick, passChit, useSpecial, cancelSpecial,
-    pickTarget, blindSnatchPickCard, revealedSnatchPick, nukePickCard, dismissVitals,
+    pickTarget, blindSnatchPickCard, revealedSnatchPick, nukePickCard, dismissVitals, consumeVitals,
     callShow, joinShow,
     nextRound, endGame, playAgain, leaveRoom,
     addBot, removeBot,
   }
 }
 
-// ── Vitals helpers ─────────────────────────────────────────────────
+// ── Vitals helpers ─────────────────────────────────────────────
 function computeVitals(players, myI) {
   return players.map((p, i) => {
     if (i === myI) return null
     const normals = p.chits.filter(c => !isSpecial(c))
     if (!normals.length) return { name:p.name, idx:i, level:'unknown', desc:'No normals' }
-    const counts  = {}
+    const counts = {}
     normals.forEach(c => { counts[c.symbol] = (counts[c.symbol]||0)+1 })
     const maxSame = Math.max(...Object.values(counts))
-    const pct     = maxSame / normals.length
-    const level   = pct>=1?'SHOW!':pct>=.75?'danger':pct>=.5?'high':pct>=.25?'medium':'low'
-    const desc    = pct>=1?'All 4 match!':pct>=.75?'3 of 4 match — very dangerous!':pct>=.5?'2 of 4 match':pct>=.25?'Warming up':'Unlikely to show soon'
+    const pct = maxSame / normals.length
+    const level = pct>=1?'SHOW!':pct>=.75?'danger':pct>=.5?'high':pct>=.25?'medium':'low'
+    const desc  = pct>=1?'All 4 match!':pct>=.75?'3 of 4 match — very dangerous!':pct>=.5?'2 of 4 match':pct>=.25?'Warming up':'Unlikely to show soon'
     return { name:p.name, idx:i, level, desc, maxSame, total:normals.length }
   }).filter(Boolean)
 }
@@ -672,4 +699,12 @@ function computeSuperVitals(players, myI, requiredSets = 1) {
     if (i === myI) return null
     return isShowHand(p.chits, requiredSets) ? { name:p.name, idx:i } : null
   }).filter(Boolean)
+}
+
+function delay(ms) { return new Promise(r => setTimeout(r, ms)) }
+function waitFor(cond, timeout, errMsg) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => { clearInterval(p); reject(new Error(errMsg)) }, timeout)
+    const p = setInterval(() => { if (cond()) { clearTimeout(t); clearInterval(p); resolve() } }, 80)
+  })
 }
