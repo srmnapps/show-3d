@@ -84,9 +84,9 @@ export const SPECIAL_SOUND_MAP = {
 let _unlocked = false
 let _initDone = false
 let _wantAmb  = null
-const _ambEls = {}
+const _ambEls = {}   // name → HTMLAudioElement
 
-// ── Ambience internals (defined early — used by unlock) ───────────
+// ── Ambience element factory ──────────────────────────────────────
 function _getAmbEl(name) {
   if (_ambEls[name]) return _ambEls[name]
   const src = AMBIENCE_FILES[name]
@@ -94,7 +94,16 @@ function _getAmbEl(name) {
   const el  = new Audio(src)
   el.loop   = true
   el.volume = getAmbienceVolume()
-  el.addEventListener('error', () => console.error('[AMBIENCE NOT FOUND]', name, src))
+  el.addEventListener('error', () =>
+    console.error('[AMBIENCE NOT FOUND]', name, src)
+  )
+  // Safety net: if loop somehow ends (network hiccup), restart it
+  el.addEventListener('ended', () => {
+    if (_wantAmb === name && _unlocked && getAmbienceEnabled()) {
+      el.currentTime = 0
+      el.play().catch(() => {})
+    }
+  })
   _ambEls[name] = el
   return el
 }
@@ -106,26 +115,30 @@ function _pauseAllAmbience() {
 }
 
 function _doPlayAmbience(name) {
-  // Pause all other tracks
+  // Pause all other tracks first
   Object.entries(_ambEls).forEach(([n, el]) => {
-    if (n !== name) try { if (!el.paused) { el.pause(); el.currentTime = 0 } } catch {}
+    if (n !== name) {
+      try { if (!el.paused) { el.pause(); el.currentTime = 0 } } catch {}
+    }
   })
   const el = _getAmbEl(name)
   if (!el) return
   el.volume = getAmbienceVolume()
-  if (!el.paused) return   // already playing
+  // Don't skip if paused — always attempt play so mobile resume works
   const p = el.play()
-  if (p?.catch) p.catch(err => console.error('[AMBIENCE ERROR]', name, err.name, err.message))
+  if (p?.catch) p.catch(err => {
+    // NotAllowedError = autoplay blocked — will retry on next gesture
+    if (err.name !== 'NotAllowedError') {
+      console.error('[AMBIENCE ERROR]', name, err.name, err.message)
+    }
+  })
 }
 
 // ── Unlock ────────────────────────────────────────────────────────
-// CRITICAL for mobile: ambience must be started SYNCHRONOUSLY inside
-// the gesture handler, not in a setTimeout. iOS/Android block audio
-// started from async callbacks even if a gesture recently happened.
 function _markUnlocked() {
   if (_unlocked) return
   _unlocked = true
-  // Start ambience synchronously — still within the gesture call stack
+  // MUST be synchronous — iOS/Android block audio started from setTimeout
   if (_wantAmb && getAmbienceEnabled()) {
     _doPlayAmbience(_wantAmb)
   }
@@ -136,7 +149,7 @@ export function initAudio() {
   if (_initDone) return
   _initDone = true
 
-  // Desktop: AudioContext already running → unlock immediately
+  // Desktop: if AudioContext already running, unlock immediately
   try {
     const Ctx = window.AudioContext || window.webkitAudioContext
     if (Ctx) {
@@ -146,7 +159,8 @@ export function initAudio() {
     }
   } catch {}
 
-  // Capture-phase listeners — fire before React, named fn for correct removeEventListener
+  // Capture-phase listeners — fire before React handlers
+  // Named function so removeEventListener works with same reference
   function _handler() {
     _markUnlocked()
     ;['pointerdown','mousedown','click','keydown','touchstart'].forEach(e =>
@@ -156,16 +170,50 @@ export function initAudio() {
   ;['pointerdown','mousedown','click','keydown','touchstart'].forEach(e =>
     document.addEventListener(e, _handler, true)
   )
+
+  // ── visibilitychange: resume ambience when tab comes back ─────
+  // On mobile, browsers suspend audio when the tab goes to background.
+  // When the user returns, we need to explicitly resume.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      if (_wantAmb && _unlocked && getAmbienceEnabled()) {
+        const el = _ambEls[_wantAmb]
+        // el.paused could be true (suspended) or readyState could be broken
+        // Always try to play — the browser will no-op if already running
+        if (el) {
+          el.play().catch(() => {
+            // If play fails after returning to tab, recreate the element
+            // (some Android browsers garbage-collect audio on background)
+            delete _ambEls[_wantAmb]
+            _doPlayAmbience(_wantAmb)
+          })
+        } else {
+          _doPlayAmbience(_wantAmb)
+        }
+      }
+    } else {
+      // Tab going to background — some browsers need explicit pause
+      // to avoid audio cutting/crackling when suspended
+      _pauseAllAmbience()
+    }
+  })
+
+  // ── pageshow: handles back/forward cache on iOS Safari ────────
+  // iOS Safari restores pages from bfcache — audio is frozen but
+  // the page is "visible", so visibilitychange doesn't fire.
+  window.addEventListener('pageshow', (e) => {
+    if (e.persisted && _wantAmb && _unlocked && getAmbienceEnabled()) {
+      // Small delay needed — bfcache restore needs a tick to settle
+      setTimeout(() => _doPlayAmbience(_wantAmb), 100)
+    }
+  })
 }
 
-// ── unlockAudio — call from any button handler for explicit unlock ─
 export function unlockAudio() { _markUnlocked() }
 
 // ── playSound ─────────────────────────────────────────────────────
-// Always called from inside a user gesture handler, so _markUnlocked()
-// here is synchronous and satisfies the browser's autoplay policy.
 export function playSound(name) {
-  // Unlock synchronously — we are inside a gesture handler
+  // Synchronous unlock — we are inside a gesture handler
   _markUnlocked()
 
   if (!getSfxEnabled()) return
@@ -189,15 +237,15 @@ export function playSpecial(type) {
 }
 
 // ── playAmbience ─────────────────────────────────────────────────
-// Idempotent — repeated calls with same name while playing = no-op.
 export function playAmbience(name) {
   if (!name) return
+  // Already playing the right track — no-op
   const existing = _ambEls[name]
-  if (existing && !existing.paused && _wantAmb === name) return  // already playing
+  if (existing && !existing.paused && _wantAmb === name) return
   _wantAmb = name
   if (!getAmbienceEnabled()) { _pauseAllAmbience(); return }
   if (!_unlocked) {
-    // Not yet unlocked — intent stored, will start synchronously on first gesture
+    // Intent stored — starts synchronously on first gesture via _markUnlocked
     _pauseAllAmbience()
     return
   }
