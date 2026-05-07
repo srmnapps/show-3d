@@ -1,53 +1,49 @@
 // src/utils/sounds.js
-// File-based audio manager using HTMLAudioElement.
-// Loads WAV files from /sounds/ (Vite public folder).
-// Supports separate SFX and Ambience controls with localStorage persistence.
 
-// ── localStorage keys ────────────────────────────────────────
 const LS_SFX_ENABLED      = 'show_sfx_enabled'
 const LS_SFX_VOLUME       = 'show_sfx_volume'
 const LS_AMBIENCE_ENABLED = 'show_ambience_enabled'
 const LS_AMBIENCE_VOLUME  = 'show_ambience_volume'
 
-// ── State ────────────────────────────────────────────────────
-let _sfxEnabled      = true
-let _sfxVolume       = 0.35
-let _ambienceEnabled = true
-let _ambienceVolume  = 0.12
-let _unlocked        = false
+const DEFAULT_SFX_VOL = 0.35
+const DEFAULT_AMB_VOL = 0.12
 
-let _currentAmbience = null   // { name, el } | null
-let _ambienceTarget  = null   // name of desired ambience
+function _bool(key, def) {
+  try { const v = localStorage.getItem(key); return v === null ? def : v === 'true' } catch { return def }
+}
+function _num(key, def) {
+  try { const v = parseFloat(localStorage.getItem(key)); return isNaN(v) ? def : v } catch { return def }
+}
+function _save(key, val) { try { localStorage.setItem(key, String(val)) } catch {} }
 
-// ── Persistence ──────────────────────────────────────────────
-function loadPrefs() {
-  try {
-    const se = localStorage.getItem(LS_SFX_ENABLED)
-    const sv = localStorage.getItem(LS_SFX_VOLUME)
-    const ae = localStorage.getItem(LS_AMBIENCE_ENABLED)
-    const av = localStorage.getItem(LS_AMBIENCE_VOLUME)
-    if (se !== null) _sfxEnabled      = se === 'true'
-    if (sv !== null) _sfxVolume       = clamp(parseFloat(sv))
-    if (ae !== null) _ambienceEnabled = ae === 'true'
-    if (av !== null) _ambienceVolume  = clamp(parseFloat(av))
-  } catch {}
+// ── Settings ──────────────────────────────────────────────────────
+export const getSfxEnabled      = () => _bool(LS_SFX_ENABLED,     true)
+export const setSfxEnabled      = (v) => _save(LS_SFX_ENABLED,    v)
+export const getSfxVolume       = () => _num(LS_SFX_VOLUME,        DEFAULT_SFX_VOL)
+export const setSfxVolume       = (v) => _save(LS_SFX_VOLUME,      v)
+export const getAmbienceEnabled = () => _bool(LS_AMBIENCE_ENABLED, true)
+export const getAmbienceVolume  = () => _num(LS_AMBIENCE_VOLUME,   DEFAULT_AMB_VOL)
+
+// Legacy aliases
+export const getSoundEnabled = getSfxEnabled
+export const setSoundEnabled = setSfxEnabled
+export const getSoundVolume  = getSfxVolume
+export const setSoundVolume  = setSfxVolume
+
+export function setAmbienceEnabled(v) {
+  _save(LS_AMBIENCE_ENABLED, v)
+  if (!v) _pauseAllAmbience()
+  else if (_wantAmb) _doPlayAmbience(_wantAmb)
+}
+export function setAmbienceVolume(v) {
+  _save(LS_AMBIENCE_VOLUME, v)
+  Object.values(_ambEls).forEach(el => { try { el.volume = v } catch {} })
 }
 
-function savePrefs() {
-  try {
-    localStorage.setItem(LS_SFX_ENABLED,      String(_sfxEnabled))
-    localStorage.setItem(LS_SFX_VOLUME,        String(_sfxVolume))
-    localStorage.setItem(LS_AMBIENCE_ENABLED,  String(_ambienceEnabled))
-    localStorage.setItem(LS_AMBIENCE_VOLUME,   String(_ambienceVolume))
-  } catch {}
-}
-
-function clamp(v) { return isNaN(v) ? 0.5 : Math.max(0, Math.min(1, v)) }
-
-// ── Sound file maps ───────────────────────────────────────────
+// ── Sound files ───────────────────────────────────────────────────
 const SOUND_FILES = {
   button:               '/sounds/button.wav',
-  loadingStart:         '/sounds/loading-start.wav',
+  loadingStart:         '/sounds/loading-start.mp3',
   cardFlip:             '/sounds/card-flip.wav',
   cardSelect:           '/sounds/card-select.wav',
   cardReorder:          '/sounds/card-reorder.wav',
@@ -56,211 +52,160 @@ const SOUND_FILES = {
   roundResult:          '/sounds/round-result.wav',
   gameEnd:              '/sounds/game-end.wav',
   error:                '/sounds/error.wav',
+  yourTurn:             '/sounds/your-turn.wav',
   specialReverse:       '/sounds/special-reverse.wav',
   specialFreeze:        '/sounds/special-freeze.wav',
   specialBlindSnatch:   '/sounds/special-blind-snatch.wav',
   specialRevealedSnatch:'/sounds/special-revealed-snatch.wav',
-  specialStunGrenade:   '/sounds/special-stun-grenade.wav',
+  specialStunGrenade:   '/sounds/special-stun-grenade.mp3',
   specialVitals:        '/sounds/special-vitals.wav',
   specialSuperVitals:   '/sounds/special-super-vitals.wav',
-  specialNuke:          '/sounds/special-nuke.wav',
+  specialNuke:          '/sounds/special-nuke.mp3',
 }
 
 const AMBIENCE_FILES = {
   lobby:  '/sounds/bg-lobby-loop.wav',
-  game1:  '/sounds/bg-game-loop-1.wav',
-  game2:  '/sounds/bg-game-loop-2.wav',
-  game3:  '/sounds/bg-game-loop-3.wav',
+  game1:  '/sounds/bg-game-loop-1.mp3',
   result: '/sounds/bg-result-loop.wav',
 }
 
-// ── Special card → sound name map ────────────────────────────
 export const SPECIAL_SOUND_MAP = {
-  REVERSE:          'specialReverse',
-  FREEZE:           'specialFreeze',
-  BLIND_SNATCH:     'specialBlindSnatch',
-  REVEALED_SNATCH:  'specialRevealedSnatch',
-  STUN_GRENADE:     'specialStunGrenade',
-  VITALS:           'specialVitals',
-  SUPER_VITALS:     'specialSuperVitals',
-  NUKE:             'specialNuke',
+  REVERSE:         'specialReverse',
+  FREEZE:          'specialFreeze',
+  BLIND_SNATCH:    'specialBlindSnatch',
+  REVEALED_SNATCH: 'specialRevealedSnatch',
+  STUN_GRENADE:    'specialStunGrenade',
+  VITALS:          'specialVitals',
+  SUPER_VITALS:    'specialSuperVitals',
+  NUKE:            'specialNuke',
 }
 
-// ── Preloaded SFX pool ────────────────────────────────────────
-// Each SFX has a small pool so repeated sounds don't cut each other off.
-const POOL_SIZE = 3
-const _sfxPools = {}   // name → HTMLAudioElement[]
-let   _sfxCursors = {} // name → index
+// ── State ─────────────────────────────────────────────────────────
+let _unlocked = false
+let _initDone = false
+let _wantAmb  = null
+const _ambEls = {}
 
-function preloadSfx() {
-  for (const [name, src] of Object.entries(SOUND_FILES)) {
-    const pool = []
-    for (let i = 0; i < POOL_SIZE; i++) {
-      const el = new Audio(src)
-      el.preload = 'auto'
-      pool.push(el)
-    }
-    _sfxPools[name]    = pool
-    _sfxCursors[name]  = 0
-  }
-}
-
-// Preload ambience elements (one per track, loop=true)
-const _ambienceEls = {}
-
-function preloadAmbience() {
-  for (const [name, src] of Object.entries(AMBIENCE_FILES)) {
-    const el = new Audio(src)
-    el.loop    = true
-    el.preload = 'auto'
-    el.volume  = _ambienceEnabled ? _ambienceVolume : 0
-    _ambienceEls[name] = el
-  }
-}
-
-// ── Unlock audio on first user interaction ────────────────────
-function tryUnlock() {
+function _markUnlocked() {
   if (_unlocked) return
   _unlocked = true
-
-  // Resume any suspended AudioContext (not needed here, but safe)
-  // Trigger a silent play on all pools to warm up mobile browsers
-  const silentEl = new Audio()
-  silentEl.volume = 0
-  silentEl.play().catch(() => {})
-
-  // If ambience was requested before unlock, start it now
-  if (_ambienceTarget) {
-    _startAmbience(_ambienceTarget)
-  }
+  setTimeout(() => {
+    if (_wantAmb && getAmbienceEnabled()) _doPlayAmbience(_wantAmb)
+  }, 0)
 }
 
-function attachUnlockListeners() {
-  const events = ['click', 'touchstart', 'keydown', 'pointerdown']
-  const handler = () => {
-    tryUnlock()
-    events.forEach(e => document.removeEventListener(e, handler))
-  }
-  events.forEach(e => document.addEventListener(e, handler, { passive: true }))
-}
-
-// ── Public: initAudio ─────────────────────────────────────────
+// ── initAudio ─────────────────────────────────────────────────────
 export function initAudio() {
-  loadPrefs()
-  preloadSfx()
-  preloadAmbience()
-  attachUnlockListeners()
-}
+  if (_initDone) return
+  _initDone = true
 
-// ── SFX controls ─────────────────────────────────────────────
-export function getSfxEnabled()       { return _sfxEnabled }
-export function setSfxEnabled(v)      { _sfxEnabled = !!v; savePrefs() }
-export function getSfxVolume()        { return _sfxVolume }
-export function setSfxVolume(v)       { _sfxVolume = clamp(v); savePrefs() }
+  // Nothing extra needed — prefs are read from localStorage on every call.
 
-// Legacy aliases used by existing App.jsx
-export function getSoundEnabled()     { return _sfxEnabled }
-export function setSoundEnabled(v)    { setSfxEnabled(v) }
-export function getSoundVolume()      { return _sfxVolume }
-export function setSoundVolume(v)     { setSfxVolume(v) }
-
-// ── Ambience controls ─────────────────────────────────────────
-export function getAmbienceEnabled()  { return _ambienceEnabled }
-export function setAmbienceEnabled(v) {
-  _ambienceEnabled = !!v
-  savePrefs()
-  if (_currentAmbience) {
-    _currentAmbience.el.volume = _ambienceEnabled ? _ambienceVolume : 0
-    if (_ambienceEnabled && _currentAmbience.el.paused && _unlocked) {
-      _currentAmbience.el.play().catch(() => {})
-    } else if (!_ambienceEnabled) {
-      _currentAmbience.el.pause()
-    }
-  }
-}
-export function getAmbienceVolume()   { return _ambienceVolume }
-export function setAmbienceVolume(v) {
-  _ambienceVolume = clamp(v)
-  savePrefs()
-  if (_currentAmbience && _ambienceEnabled) {
-    _currentAmbience.el.volume = _ambienceVolume
-  }
-}
-
-// ── Play SFX ─────────────────────────────────────────────────
-export function playSound(name) {
-  if (!_sfxEnabled) return
-  const pool = _sfxPools[name]
-  if (!pool) return
+  // Desktop: try AudioContext — if already running, unlock now
   try {
-    const idx = _sfxCursors[name] % pool.length
-    _sfxCursors[name] = (idx + 1) % pool.length
-    const el = pool[idx]
-    el.volume      = _sfxVolume
-    el.currentTime = 0
-    el.play().catch(() => {})
-  } catch {}
+    const Ctx = window.AudioContext || window.webkitAudioContext
+    if (Ctx) {
+      const ctx = new Ctx()
+      if (ctx.state === 'running') _markUnlocked()
+      ctx.close()
+    }
+  } catch (e) {
+  }
+
+  function _handler() {
+    _markUnlocked()
+    ;['pointerdown','mousedown','click','keydown','touchstart'].forEach(e =>
+      document.removeEventListener(e, _handler, true)
+    )
+  }
+  ;['pointerdown','mousedown','click','keydown','touchstart'].forEach(e =>
+    document.addEventListener(e, _handler, true)
+  )
 }
 
-// ── Play special by card type ─────────────────────────────────
+export function unlockAudio() { _markUnlocked() }
+
+// ── playSound ─────────────────────────────────────────────────────
+export function playSound(name) {
+  // Always unlock on any playSound call — it's always inside a user gesture
+  _markUnlocked()
+
+  if (!getSfxEnabled()) {
+    return
+  }
+
+  const src = SOUND_FILES[name]
+  if (!src) {
+    console.warn('[SFX] unknown key:', name)
+    return
+  }
+
+
+  try {
+    const el  = new Audio(src)
+    el.volume = getSfxVolume()
+    const p   = el.play()
+    if (p?.catch) p.catch(err => console.error('[SFX ERROR]', name, err.name, err.message))
+  } catch (err) {
+    console.error('[SFX EXCEPTION]', name, err)
+  }
+}
+
 export function playSpecial(type) {
   const name = SPECIAL_SOUND_MAP[type]
   if (name) playSound(name)
 }
 
-// ── Ambience internals ────────────────────────────────────────
-function _stopCurrentAmbience() {
-  if (!_currentAmbience) return
-  try {
-    _currentAmbience.el.pause()
-    _currentAmbience.el.currentTime = 0
-  } catch {}
-  _currentAmbience = null
+// ── Ambience ──────────────────────────────────────────────────────
+function _getAmbEl(name) {
+  if (_ambEls[name]) return _ambEls[name]
+  const src = AMBIENCE_FILES[name]
+  if (!src) return null
+  const el  = new Audio(src)
+  el.loop   = true
+  el.volume = getAmbienceVolume()
+  el.addEventListener('error', () => console.error('[AMBIENCE NOT FOUND]', name, src))
+  _ambEls[name] = el
+  return el
 }
 
-function _startAmbience(name) {
-  const el = _ambienceEls[name]
+function _pauseAllAmbience() {
+  Object.values(_ambEls).forEach(el => {
+    try { if (!el.paused) { el.pause(); el.currentTime = 0 } } catch {}
+  })
+}
+
+function _doPlayAmbience(name) {
+  Object.entries(_ambEls).forEach(([n, el]) => {
+    if (n !== name) try { if (!el.paused) { el.pause(); el.currentTime = 0 } } catch {}
+  })
+  const el = _getAmbEl(name)
   if (!el) return
-  el.volume = _ambienceEnabled ? _ambienceVolume : 0
-  el.currentTime = 0
-  _currentAmbience = { name, el }
-  if (_ambienceEnabled) {
-    el.play().catch(() => {})
-  }
+  el.volume = getAmbienceVolume()
+  if (!el.paused) return
+  const p = el.play()
+  if (p?.catch) p.catch(err => console.error('[AMBIENCE ERROR]', name, err.name, err.message))
 }
 
-// ── Public: playAmbience / stopAmbience ───────────────────────
 export function playAmbience(name) {
-  // No-op if same ambience already playing
-  if (_currentAmbience?.name === name && !_currentAmbience.el.paused) return
-
-  _stopCurrentAmbience()
-  _ambienceTarget = name
-
-  if (!_unlocked) return  // Will be started on first interaction
-  _startAmbience(name)
+  if (!name) return
+  const existing = _ambEls[name]
+  if (existing && !existing.paused && _wantAmb === name) return
+  _wantAmb = name
+  if (!getAmbienceEnabled()) { _pauseAllAmbience(); return }
+  if (!_unlocked) { _pauseAllAmbience(); return }
+  _doPlayAmbience(name)
 }
 
 export function stopAmbience() {
-  _ambienceTarget = null
-  _stopCurrentAmbience()
+  _wantAmb = null
+  _pauseAllAmbience()
 }
 
-// ── Helper: choose a random game loop ────────────────────────
-let _gameLoopChoice = null
-export function chooseGameLoop() {
-  if (!_gameLoopChoice) {
-    const choices = ['game1', 'game2', 'game3']
-    _gameLoopChoice = choices[Math.floor(Math.random() * choices.length)]
-  }
-  return _gameLoopChoice
-}
-export function resetGameLoop() { _gameLoopChoice = null }
+let _chosenLoop = null
+export function chooseGameLoop()  { if (!_chosenLoop) _chosenLoop = 'game1'; return _chosenLoop }
+export function resetGameLoop()   { _chosenLoop = null }
 
-// ── Helper: withButtonSound ───────────────────────────────────
-export function withButtonSound(handler) {
-  return (...args) => {
-    playSound('button')
-    handler?.(...args)
-  }
+export function withButtonSound(fn) {
+  return (...args) => { playSound('button'); return fn?.(...args) }
 }

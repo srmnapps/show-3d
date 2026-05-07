@@ -1,21 +1,35 @@
-// show-3d/src/hooks/useWebSocket.js
-// Per-room session storage + URL helpers + send() returns boolean
+// src/hooks/useWebSocket.js
+// Merged: V2 base (server-authoritative, session helpers, URL routing)
+//         + V1 fix: rejoin:true flag in auto-reconnect pending message
 
 import { useRef, useCallback } from 'react'
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001'
 
-// ── Per-room localStorage helpers ─────────────────────────────
+// ── Per-room localStorage helpers ─────────────────────────────────
 const LS_PREFIX = 'show_session_'
 const LS_LAST   = 'show_last_room'
 
+/**
+ * Save session for a room immediately after ROOM_CREATED / JOINED_ROOM.
+ * Call early — do NOT wait for STATE_SYNC.
+ */
 export function saveSession(me, roomCode) {
+  if (!me?.id || !me?.name || !roomCode) return
   try {
-    localStorage.setItem(LS_PREFIX + roomCode, JSON.stringify({ me, roomCode, lastSeen: Date.now() }))
+    console.log('[SESSION SAVE]', roomCode, me.id)
+    localStorage.setItem(
+      LS_PREFIX + roomCode,
+      JSON.stringify({ me, roomCode, lastSeen: Date.now() }),
+    )
     localStorage.setItem(LS_LAST, roomCode)
   } catch {}
 }
 
+/**
+ * Clear session ONLY on intentional Leave Room.
+ * Never call from ws.onclose or on disconnect.
+ */
 export function clearSession(roomCode) {
   try {
     if (roomCode) {
@@ -29,6 +43,10 @@ export function clearSession(roomCode) {
   } catch {}
 }
 
+/**
+ * Load session for a specific roomCode, or for the last room if roomCode omitted.
+ * Returns { me, roomCode } or null.
+ */
 export function loadSession(roomCode) {
   try {
     const key = roomCode
@@ -42,11 +60,11 @@ export function loadSession(roomCode) {
   return null
 }
 
-// ── URL helpers (path-based SPA routing) ──────────────────────
+// ── URL helpers (path-based SPA routing) ──────────────────────────
 
 /**
  * Extract roomCode from path like /room/XXXX.
- * Returns null if path doesn't match.
+ * Returns null if path does not match.
  */
 export function getRoomCodeFromPath() {
   const m = window.location.pathname.match(/^\/room\/([^/]+)/)
@@ -55,7 +73,6 @@ export function getRoomCodeFromPath() {
 
 /**
  * Navigate to /room/<roomCode> using pushState.
- * Marks the history entry with { showScreen: 'room', roomCode }.
  */
 export function navigateToRoom(roomCode) {
   const path = `/room/${roomCode}`
@@ -81,7 +98,7 @@ export function navigateHome() {
   }
 }
 
-// ── Hook ──────────────────────────────────────────────────────
+// ── Hook ──────────────────────────────────────────────────────────
 export function useWebSocket() {
   const wsRef          = useRef(null)
   const onMessageRef   = useRef(null)
@@ -119,15 +136,19 @@ export function useWebSocket() {
 
     ws.onclose = () => {
       setStatus('disconnected')
+      // IMPORTANT: Do NOT call clearSession here.
+      // Browser/tab close triggers this — it is NOT an intentional leave.
       if (!manualCloseRef.current) {
         reconnTimerRef.current = setTimeout(() => {
-          // On reconnect — use per-room session (last room)
+          // On auto-reconnect, attempt rejoin using last saved session.
+          // The rejoin:true flag tells the server this is a reconnect, not a fresh join.
           const session = loadSession()
-          if (session) {
+          if (session?.me?.id && session?.roomCode) {
             pendingMsgRef.current = {
               type:     'JOIN_ROOM',
               roomCode: session.roomCode,
               player:   session.me,
+              rejoin:   true,   // V1 fix: tells server this is a reconnect
             }
           }
           open()
@@ -150,7 +171,7 @@ export function useWebSocket() {
     open()
   }, [open])
 
-  /** Returns true if sent, false if socket not open. */
+  /** Returns true if sent, false if socket not ready. */
   const send = useCallback((payload) => {
     const ws = wsRef.current
     if (ws?.readyState === WebSocket.OPEN) {
@@ -160,6 +181,11 @@ export function useWebSocket() {
     return false
   }, [])
 
+  /**
+   * disconnect() — for intentional leave only.
+   * Sets manualCloseRef so onclose does NOT auto-reconnect.
+   * Does NOT clear session — caller (leaveRoom) must do that explicitly.
+   */
   const disconnect = useCallback(() => {
     manualCloseRef.current = true
     clearTimeout(reconnTimerRef.current)
