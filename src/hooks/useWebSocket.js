@@ -1,17 +1,18 @@
-// show-3d/src/hooks/useWebSocket.js
-// Per-room session storage + URL helpers + send() returns boolean
+// src/hooks/useWebSocket.js
+// Merged: V2 base (server-authoritative, session helpers, URL routing)
+//         + V1 fix: rejoin:true flag in auto-reconnect pending message
 
 import { useRef, useCallback } from 'react'
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001'
 
-// ── Per-room localStorage helpers ─────────────────────────────────────────────
+// ── Per-room localStorage helpers ─────────────────────────────────
 const LS_PREFIX = 'show_session_'
 const LS_LAST   = 'show_last_room'
 
 /**
  * Save session for a room immediately after ROOM_CREATED / JOINED_ROOM.
- * This is intentionally called early — do NOT wait for STATE_SYNC.
+ * Call early — do NOT wait for STATE_SYNC.
  */
 export function saveSession(me, roomCode) {
   if (!me?.id || !me?.name || !roomCode) return
@@ -27,7 +28,7 @@ export function saveSession(me, roomCode) {
 
 /**
  * Clear session ONLY on intentional Leave Room.
- * Never call this from ws.onclose or on disconnect.
+ * Never call from ws.onclose or on disconnect.
  */
 export function clearSession(roomCode) {
   try {
@@ -59,7 +60,7 @@ export function loadSession(roomCode) {
   return null
 }
 
-// ── URL helpers (path-based SPA routing) ──────────────────────────────────────
+// ── URL helpers (path-based SPA routing) ──────────────────────────
 
 /**
  * Extract roomCode from path like /room/XXXX.
@@ -97,7 +98,7 @@ export function navigateHome() {
   }
 }
 
-// ── Hook ──────────────────────────────────────────────────────────────────────
+// ── Hook ──────────────────────────────────────────────────────────
 export function useWebSocket() {
   const wsRef          = useRef(null)
   const onMessageRef   = useRef(null)
@@ -140,14 +141,14 @@ export function useWebSocket() {
       if (!manualCloseRef.current) {
         reconnTimerRef.current = setTimeout(() => {
           // On auto-reconnect, attempt rejoin using last saved session.
-          // The rejoin flag tells the server this is a reconnect, not a fresh join.
+          // The rejoin:true flag tells the server this is a reconnect, not a fresh join.
           const session = loadSession()
           if (session?.me?.id && session?.roomCode) {
             pendingMsgRef.current = {
               type:     'JOIN_ROOM',
               roomCode: session.roomCode,
               player:   session.me,
-              rejoin:   true,
+              rejoin:   true,   // V1 fix: tells server this is a reconnect
             }
           }
           open()
@@ -160,9 +161,7 @@ export function useWebSocket() {
 
   /**
    * connect(onMessage, onStatusChange, initialMsg?)
-   *
    * initialMsg is sent immediately on socket open.
-   * If initialMsg is a JOIN_ROOM this also carries rejoin:true when appropriate.
    */
   const connect = useCallback((onMessage, onStatusChange, initialMsg) => {
     onMessageRef.current   = onMessage
